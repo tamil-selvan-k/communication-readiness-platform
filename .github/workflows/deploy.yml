@@ -167,9 +167,9 @@ jobs:
               --env-file .env.production \
               ps
 
-            echo "Checking application through Nginx..."
+            echo "Checking application..."
 
-            curl --fail http://localhost/api/health
+            curl --fail http://localhost:5000/api/health
 
             echo "Checking AI service..."
 
