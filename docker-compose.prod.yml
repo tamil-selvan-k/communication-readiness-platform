@@ -1,18 +1,5 @@
 services:
 
-  frontend:
-    image: ${DOCKERHUB_USERNAME}/communication-readiness-frontend:${IMAGE_TAG}
-    restart: unless-stopped
-    ports:
-      - "80:80"
-    depends_on:
-      backend:
-        condition: service_healthy
-      ai-service:
-        condition: service_healthy
-    networks:
-      - app
-
   backend:
     image: ${DOCKERHUB_USERNAME}/communication-readiness-backend:${IMAGE_TAG}
     restart: unless-stopped
