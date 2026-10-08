@@ -5,10 +5,11 @@ import { AppError } from '../shared/errors/AppError';
 import { sendSuccess, sendError } from '../shared/helpers/response';
 import { AuthRequest } from '../middleware/authenticate';
 import { requireRole } from '../middleware/authorize';
+import { STUDENT_SUMMARY_SELECT } from '../services/studentDirectory';
 
 export const mentorRouter = Router();
 
-// ── POST /api/mentors/assign (PROGRAM_ADMIN) ──────────────────────────────────
+// ── POST /api/mentors/assign (PROGRAM_ADMIN, SUPER_ADMIN, DEPARTMENT_ADMIN) ───
 
 const assignSchema = z.object({
   studentId: z.string().uuid(),
@@ -17,7 +18,7 @@ const assignSchema = z.object({
 
 mentorRouter.post(
   '/assign',
-  requireRole('PROGRAM_ADMIN'),
+  requireRole('PROGRAM_ADMIN', 'SUPER_ADMIN', 'DEPARTMENT_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const parsed = assignSchema.safeParse(req.body);
@@ -49,13 +50,14 @@ mentorRouter.post(
       try {
         await client.query('BEGIN');
         await client.query(
-          `UPDATE org.student_mentor_assignments SET is_active = false
+          `UPDATE org.student_mentor_assignments SET is_active = false, ends_at = now()
            WHERE student_id = $1 AND is_active = true`,
           [studentId]
         );
         const { rows } = await client.query<{ id: string }>(
-          `INSERT INTO org.student_mentor_assignments (student_id, mentor_id, assigned_by, is_active)
-           VALUES ($1, $2, $3, true) RETURNING id`,
+          `INSERT INTO org.student_mentor_assignments
+             (student_id, mentor_user_id, assigned_by, is_active, starts_at)
+           VALUES ($1, $2, $3, true, now()) RETURNING id`,
           [studentId, mentorId, assignedBy]
         );
         await client.query('COMMIT');
@@ -83,16 +85,8 @@ mentorRouter.get(
     try {
       const mentorId = req.user!.id;
       const { rows } = await db.query(
-        `SELECT s.id, s.roll_number, s.resume_url, s.resume_verified,
-                u.name, u.email,
-                b.name as batch_name, b.track,
-                sub.name as subdivision_name
-         FROM org.student_mentor_assignments sma
-         JOIN org.students s ON s.id = sma.student_id
-         JOIN identity.users u ON u.id = s.user_id
-         LEFT JOIN org.batches b ON b.id = s.batch_id
-         LEFT JOIN org.subdivisions sub ON sub.id = s.subdivision_id
-         WHERE sma.mentor_id = $1 AND sma.is_active = true
+        `${STUDENT_SUMMARY_SELECT}
+         WHERE active_sma.mentor_user_id = $1
          ORDER BY u.name`,
         [mentorId]
       );

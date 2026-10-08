@@ -45,7 +45,7 @@ assessmentsRouter.get(
 assessmentsRouter.post(
   '/',
   authenticate,
-  requireRole('PROGRAM_ADMIN', 'PLACEMENT_COORDINATOR'),
+  requireRole('PROGRAM_ADMIN', 'PLACEMENT_COORDINATOR', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const parsed = createSchema.safeParse(req.body);
@@ -94,7 +94,7 @@ assessmentsRouter.get(
 assessmentsRouter.put(
   '/:id',
   authenticate,
-  requireRole('PROGRAM_ADMIN', 'PLACEMENT_COORDINATOR'),
+  requireRole('PROGRAM_ADMIN', 'PLACEMENT_COORDINATOR', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { id } = req.params;

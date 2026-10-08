@@ -288,8 +288,6 @@ npm run dev
    - User and student listing
    
    See PLATFORM_OWNER_INTEGRATION_COMPLETION_REPORT.md for full details.
-   
-   Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
    ```
 3. Push to integration/frontend-backend branch
 4. Create pull request with link to completion report
@@ -366,9 +364,7 @@ git commit -m "feat(platform-owner): Complete backend integration with Supabase
 - NO database schema changes (uses existing verified schema)
 - Interview functionality completely untouched
 
-See PLATFORM_OWNER_INTEGRATION_COMPLETION_REPORT.md for details.
-
-Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
+See PLATFORM_OWNER_INTEGRATION_COMPLETION_REPORT.md for details."
 
 git push origin integration/frontend-backend
 ```

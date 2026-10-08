@@ -7,6 +7,9 @@ let _client: RedisClient | null = null;
 let _connectPromise: Promise<unknown> | null = null;
 
 async function getClient(): Promise<RedisClient> {
+  // Caching is optional. Without REDIS_URL, fail fast so every call degrades to a
+  // cache miss — a connect attempt to a missing server never settles and hangs the request.
+  if (!env.REDIS_URL) throw new Error('Redis not configured');
   if (_client?.isReady) return _client;
   if (_connectPromise) {
     await _connectPromise;

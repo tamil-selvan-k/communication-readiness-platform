@@ -1,6 +1,7 @@
 import { eventBus } from '../../shared/events/eventBus';
 import { Events, UserRegisteredPayload, AttemptCompletedPayload } from '../../shared/events/events';
 import { CreditService } from './credits.service';
+import { rewardCompletion } from '../../services/coinService';
 import { EligibilityService } from '../placement/eligibility.service';
 
 export function registerM4EventHandlers(): void {
@@ -18,20 +19,9 @@ export function registerM4EventHandlers(): void {
   eventBus.on(Events.ATTEMPT_COMPLETED, async (payload: AttemptCompletedPayload) => {
     if (!payload.studentId) return;
     try {
-      // Fetch earn amount from global policy
-      const { db } = await import('../../shared/db/pool');
-      const { rows: policies } = await db.query(
-        `SELECT earn_amount FROM credit.credit_policies
-         WHERE scope_type = 'GLOBAL' AND is_active = TRUE ORDER BY created_at ASC LIMIT 1`
-      );
-      const earnAmount = policies.length > 0 ? Number(policies[0].earn_amount) : 10;
-
-      await CreditService.earn(
-        payload.studentId,
-        earnAmount,
-        'ATTEMPT_COMPLETED',
-        payload.attemptId
-      );
+      // Fair completion: the session's coin back plus a bonus, capped at the wallet size
+      // (only for attempts that were charged when they started).
+      await rewardCompletion(payload.studentId, payload.attemptId);
     } catch (err) {
       console.error('[M4] ATTEMPT_COMPLETED credit earn error:', (err as Error).message);
     }

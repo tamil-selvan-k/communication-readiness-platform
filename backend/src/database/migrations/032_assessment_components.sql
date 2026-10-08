@@ -2,7 +2,7 @@
 -- Conflict note: checklist says weight must sum to 1.00 per assessment — enforced in application.
 -- Actual schema adds component_type + configuration JSONB + is_active (not in checklist).
 
-CREATE TABLE assessment.assessment_components (
+CREATE TABLE IF NOT EXISTS assessment.assessment_components (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     assessment_id    UUID NOT NULL REFERENCES assessment.assessments(id) ON DELETE CASCADE,
     component_type   VARCHAR(50) NOT NULL,

@@ -3,7 +3,7 @@
 -- embedding dimension: 1536 (OpenAI/Groq text-embedding-3-small compatible).
 -- IVFFlat index is created in migration 068 (separate to allow tuning after data load).
 
-CREATE TABLE knowledge.knowledge_chunks (
+CREATE TABLE IF NOT EXISTS knowledge.knowledge_chunks (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id       UUID NOT NULL REFERENCES knowledge.knowledge_documents(id) ON DELETE CASCADE,
     chunk_index       INTEGER NOT NULL,
@@ -16,3 +16,7 @@ CREATE TABLE knowledge.knowledge_chunks (
 
     CONSTRAINT uq_chunks_document_idx UNIQUE (document_id, chunk_index)
 );
+
+-- The table may already exist from an earlier migration with fewer columns;
+-- add the columns this definition introduces.
+ALTER TABLE knowledge.knowledge_chunks ADD COLUMN IF NOT EXISTS embedding vector(1536);

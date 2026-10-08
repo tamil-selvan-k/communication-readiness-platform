@@ -20,8 +20,9 @@ const STORAGE_KEY = 'crp_short_logs';
 const MAX_BUFFER = 100;
 
 function persistShortLog(line: string) {
-  // 1. Send to server to append to logs/app.log on disk
-  try {
+  // 1. Dev only: the Vite dev server appends to logs/app.log. Production has no such
+  //    endpoint, and posting there would fill the console with failed requests.
+  if (import.meta.env.DEV) try {
     fetch('/api/logs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

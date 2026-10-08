@@ -109,6 +109,25 @@ export interface ParsedResume {
     techStack: string[];
     description: string;
   }[];
+  experience?: {
+    title: string;
+    company: string;
+    duration: string;
+    description: string;
+  }[];
+  education?: {
+    degree: string;
+    institution: string;
+    year: string;
+  }[];
+  certifications?: string[];
+  phone?: string;
+  email?: string;
+  links?: {
+    github?: string | null;
+    linkedin?: string | null;
+    portfolio?: string | null;
+  };
 }
 
 export interface CriteriaTask {
@@ -135,6 +154,8 @@ export interface QuestionTurn {
   feedback?: string;
   strengths?: string;
   weaknesses?: string;
+  // Rubric points this answer missed (live interview)
+  keyPointsMissed?: string[];
 }
 
 export interface DiagnosticReport {
@@ -158,6 +179,30 @@ export interface DiagnosticReport {
   isFlagged: boolean;
   isDisqualified?: boolean;
   disqualificationReason?: string;
+  // Present on reports built by the live interview server
+  coins?: number; // wallet after this session's completion reward
+  fluencyScore?: number;
+  clarityScore?: number;
+  paceLabel?: string | null;
+  longPauses?: number;
+  averageResponseLatencySec?: number | null;
+  questionsAnswered?: number;
+  questionsPlanned?: number;
+  scoringMethod?: string[];
+  turns?: {
+    turn: number;
+    question: string;
+    difficulty: 'EASY' | 'MEDIUM' | 'ADVANCED';
+    technicalScore: number;
+    communicationScore: number;
+    overallScore: number;
+    wpm: number | null;
+    fillerCount: number;
+    pauseCount: number | null;
+    feedback: string;
+    pointsCovered: string[];
+    pointsMissed: string[];
+  }[];
 }
 
 export interface ImprovementChecklistItem {

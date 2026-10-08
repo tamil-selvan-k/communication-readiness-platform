@@ -3,7 +3,7 @@
 -- Actual schema uses communication_metrics JSONB for raw metrics and dimension_scores JSONB
 -- for per-response breakdown. Following actual schema.
 
-CREATE TABLE evaluation.response_evaluations (
+CREATE TABLE IF NOT EXISTS evaluation.response_evaluations (
     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     response_id          UUID NOT NULL UNIQUE REFERENCES evaluation.responses(id),
     ai_run_id            UUID NOT NULL REFERENCES evaluation.ai_runs(id),

@@ -317,7 +317,7 @@ export const ResumeUploadModal: React.FC<ResumeUploadModalProps> = ({ onClose })
                 <p className="text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-2 font-mono">
                   Extracted Projects ({student.resume?.projects.length || 0})
                 </p>
-                <div className="space-y-2.5 max-h-56 overflow-y-auto pr-1">
+                <div className="space-y-2.5 max-h-40 overflow-y-auto pr-1">
                   {student.resume?.projects.map((proj, idx) => (
                     <div key={idx} className="bg-neutral-50 border border-neutral-200/80 rounded-xl p-3 text-xs space-y-1">
                       <div className="flex items-center justify-between">
@@ -338,6 +338,87 @@ export const ResumeUploadModal: React.FC<ResumeUploadModalProps> = ({ onClose })
                   )}
                 </div>
               </div>
+
+              {/* Experience */}
+              {(student.resume as any)?.experience?.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-2 font-mono">
+                    Work Experience ({(student.resume as any).experience.length})
+                  </p>
+                  <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                    {(student.resume as any).experience.map((exp: any, idx: number) => (
+                      <div key={idx} className="bg-neutral-50 border border-neutral-200/80 rounded-xl p-3 text-xs space-y-0.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <span className="font-semibold text-neutral-900">{exp.title}</span>
+                            {exp.company && <span className="text-neutral-500 ml-1">@ {exp.company}</span>}
+                          </div>
+                          {exp.duration && <span className="text-[10px] font-mono text-neutral-400 shrink-0">{exp.duration}</span>}
+                        </div>
+                        {exp.description && <p className="text-neutral-600 text-[11px] leading-relaxed">{exp.description}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Education */}
+              {(student.resume as any)?.education?.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-2 font-mono">Education</p>
+                  <div className="space-y-2">
+                    {(student.resume as any).education.map((edu: any, idx: number) => (
+                      <div key={idx} className="bg-neutral-50 border border-neutral-200/80 rounded-xl p-3 text-xs">
+                        <span className="font-semibold text-neutral-900">{edu.degree}</span>
+                        {edu.institution && <span className="text-neutral-500 ml-1">— {edu.institution}</span>}
+                        {edu.year && <span className="text-[10px] font-mono text-neutral-400 ml-2">{edu.year}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Certifications */}
+              {(student.resume as any)?.certifications?.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-2 font-mono">Certifications</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(student.resume as any).certifications.map((cert: string, idx: number) => (
+                      <span key={idx} className="px-2 py-1 bg-emerald-50 border border-emerald-200 rounded-lg text-[11px] font-medium text-emerald-800">
+                        {cert}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Links */}
+              {(student.resume as any)?.links && Object.values((student.resume as any).links).some(Boolean) && (
+                <div>
+                  <p className="text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-2 font-mono">Links</p>
+                  <div className="flex flex-wrap gap-2">
+                    {(student.resume as any).links.github && (
+                      <a href={(student.resume as any).links.github} target="_blank" rel="noopener noreferrer"
+                        className="px-2.5 py-1 bg-neutral-100 border border-neutral-200 rounded-lg text-[11px] font-mono text-neutral-700 hover:bg-neutral-200 transition-colors">
+                        GitHub ↗
+                      </a>
+                    )}
+                    {(student.resume as any).links.linkedin && (
+                      <a href={(student.resume as any).links.linkedin} target="_blank" rel="noopener noreferrer"
+                        className="px-2.5 py-1 bg-blue-50 border border-blue-200 rounded-lg text-[11px] font-mono text-blue-700 hover:bg-blue-100 transition-colors">
+                        LinkedIn ↗
+                      </a>
+                    )}
+                    {(student.resume as any).links.portfolio && (
+                      <a href={(student.resume as any).links.portfolio} target="_blank" rel="noopener noreferrer"
+                        className="px-2.5 py-1 bg-purple-50 border border-purple-200 rounded-lg text-[11px] font-mono text-purple-700 hover:bg-purple-100 transition-colors">
+                        Portfolio ↗
+                      </a>
+                    )}
+                  </div>
+                </div>
+              )}
+
             </div>
           )}
         </div>

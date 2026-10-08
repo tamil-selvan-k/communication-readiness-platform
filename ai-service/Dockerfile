@@ -11,10 +11,8 @@ RUN apt-get update && \
 
 COPY requirements.txt ./
 
-RUN pip install --no-cache-dir \
-    --index-url https://download.pytorch.org/whl/cpu \
-    torch
-
+# torch / sentence-transformers / librosa are optional (requirements-ml.txt) and not installed:
+# no running code imports them, and they would add ~2 GB to the image.
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .

@@ -27,7 +27,7 @@ const updateSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 });
 
-const BANK_READER_ROLES = ['FACULTY_MENTOR', 'TRAINER', 'PROGRAM_ADMIN', 'PLACEMENT_COORDINATOR'] as const;
+const BANK_READER_ROLES = ['FACULTY_MENTOR', 'TRAINER', 'PROGRAM_ADMIN', 'PLACEMENT_COORDINATOR', 'SUPER_ADMIN'] as const;
 
 // GET /api/question-bank
 questionBankRouter.get(
@@ -62,7 +62,7 @@ questionBankRouter.get(
 questionBankRouter.post(
   '/',
   authenticate,
-  requireRole('FACULTY_MENTOR', 'TRAINER', 'PROGRAM_ADMIN'),
+  requireRole('FACULTY_MENTOR', 'TRAINER', 'PROGRAM_ADMIN', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const parsed = createSchema.safeParse(req.body);
@@ -112,7 +112,7 @@ questionBankRouter.post(
 questionBankRouter.put(
   '/:id',
   authenticate,
-  requireRole('FACULTY_MENTOR', 'TRAINER', 'PROGRAM_ADMIN'),
+  requireRole('FACULTY_MENTOR', 'TRAINER', 'PROGRAM_ADMIN', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { id } = req.params;
@@ -152,7 +152,7 @@ questionBankRouter.put(
 questionBankRouter.delete(
   '/:id',
   authenticate,
-  requireRole('PROGRAM_ADMIN', 'PLACEMENT_COORDINATOR'),
+  requireRole('PROGRAM_ADMIN', 'PLACEMENT_COORDINATOR', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { id } = req.params;

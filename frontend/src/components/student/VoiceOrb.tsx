@@ -282,12 +282,12 @@ const VoiceOrbComponent: React.FC<VoiceOrbProps> = ({ state, volume = 0.3, size 
     // 7. Animation Loop with Voice-Driven Wave Movement in OPPOSITE Direction to Sphere
     let animationFrameId: number;
     let smoothedVolume = 0.15;
-    const clock = new THREE.Clock();
+    const startedAt = performance.now();
 
     const animate = () => {
       animationFrameId = requestAnimationFrame(animate);
 
-      const time = clock.getElapsedTime();
+      const time = (performance.now() - startedAt) / 1000;
       const currentState = stateRef.current;
       const rawVolume = volumeRef.current || 0.15;
 

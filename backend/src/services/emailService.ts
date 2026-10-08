@@ -26,6 +26,16 @@ export interface StaffWelcomeEmailOptions {
   createdBy: string;
 }
 
+// Names and emails come from admin input; never let them inject markup into the email.
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export async function sendStaffWelcomeEmail(opts: StaffWelcomeEmailOptions): Promise<void> {
   if (!env.SMTP_USER) {
     console.warn('[emailService] SMTP_USER not set — skipping welcome email for', opts.to);
@@ -48,9 +58,9 @@ export async function sendStaffWelcomeEmail(opts: StaffWelcomeEmailOptions): Pro
       <p style="color: #6b7280; margin: 0; font-size: 14px;">Your account has been created</p>
     </div>
 
-    <p style="color: #374151; font-size: 15px; line-height: 1.6;">Hi <strong>${opts.name}</strong>,</p>
+    <p style="color: #374151; font-size: 15px; line-height: 1.6;">Hi <strong>${escapeHtml(opts.name)}</strong>,</p>
     <p style="color: #374151; font-size: 15px; line-height: 1.6;">
-      <strong>${opts.createdBy}</strong> has created a <strong>${roleName}</strong> account for you on ${env.APP_NAME}.
+      <strong>${escapeHtml(opts.createdBy)}</strong> has created a <strong>${escapeHtml(roleName)}</strong> account for you on ${env.APP_NAME}.
       Use the credentials below to sign in.
     </p>
 
@@ -62,15 +72,15 @@ export async function sendStaffWelcomeEmail(opts: StaffWelcomeEmailOptions): Pro
         </tr>
         <tr>
           <td style="color: #6b7280; padding: 4px 0;">Email</td>
-          <td style="color: #111827; font-weight: 500; font-family: monospace;">${opts.to}</td>
+          <td style="color: #111827; font-weight: 500; font-family: monospace;">${escapeHtml(opts.to)}</td>
         </tr>
         <tr>
           <td style="color: #6b7280; padding: 4px 0;">Password</td>
-          <td style="color: #111827; font-weight: 600; font-family: monospace; font-size: 16px; letter-spacing: 1px;">${opts.password}</td>
+          <td style="color: #111827; font-weight: 600; font-family: monospace; font-size: 16px; letter-spacing: 1px;">${escapeHtml(opts.password)}</td>
         </tr>
         <tr>
           <td style="color: #6b7280; padding: 4px 0;">Role</td>
-          <td style="color: #111827; font-weight: 500;">${roleName}</td>
+          <td style="color: #111827; font-weight: 500;">${escapeHtml(roleName)}</td>
         </tr>
       </table>
     </div>

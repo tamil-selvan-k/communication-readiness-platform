@@ -4,16 +4,39 @@ import { db } from '../shared/db/pool';
 import { AppError } from '../shared/errors/AppError';
 import { sendSuccess, sendError } from '../shared/helpers/response';
 import { AuthRequest } from '../middleware/authenticate';
-import { eventBus } from '../shared/events/eventBus';
-import { Events, AttemptCompletedPayload } from '../shared/events/events';
+import { requireRole } from '../middleware/authorize';
+import { assertStudentAccess } from '../shared/auth/studentScope';
+import { STUDENT_READ_ROLES } from '../shared/types/roles';
+import {
+  StudentContext,
+  createAttemptAndSession,
+  completeAttempt,
+  startLiveInterview,
+} from '../services/interviewSessionService';
 
 export const interviewRouter = Router();
+
+// Mounted at /api/interview (next to the live WebSocket at /api/interview/ws)
+export const liveInterviewRouter = Router();
 
 // ── Validation schemas ────────────────────────────────────────────────────────
 
 const startSessionSchema = z.object({
   studentId: z.string().uuid(),
   goal:      z.string().min(1).max(500).default('Improve technical skills and interview readiness'),
+});
+
+const startLiveSessionSchema = z.object({
+  sessionType: z.literal('MOCK_INTERVIEW').default('MOCK_INTERVIEW'),
+  // Parsed resume (from the browser) so questions are grounded in the candidate's projects
+  resume: z.object({
+    skills: z.array(z.string().max(80)).max(40).optional(),
+    projects: z.array(z.object({
+      title: z.string().max(200),
+      techStack: z.array(z.string().max(80)).max(20).optional(),
+      description: z.string().max(1000).optional(),
+    })).max(10).optional(),
+  }).optional(),
 });
 
 const concludeSessionSchema = z.object({
@@ -24,63 +47,62 @@ const concludeSessionSchema = z.object({
   listeningScore:     z.number().min(0).max(100).optional().nullable(),
 });
 
+// Manually recorded attempts (POST /, /:id/conclude) carry client-supplied
+// scores, so only staff may use them — students take live interviews, where the
+// server computes every score. Mentors are further limited to their mentees.
+const requireAssessmentStaff = requireRole(...STUDENT_READ_ROLES, 'FACULTY_MENTOR');
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // ── Helper: look up student org context ──────────────────────────────────────
 
-async function getStudentContext(studentId: string) {
-  const { rows } = await db.query(
-    `SELECT s.id, s.program_id, s.batch_id, s.subdivision_id
-     FROM org.students s WHERE s.id = $1`,
+async function getStudentContext(studentId: string): Promise<StudentContext> {
+  const { rows } = await db.query<StudentContext>(
+    `SELECT s.id, b.program_id, s.batch_id, s.subdivision_id
+     FROM org.students s
+     JOIN org.batches b ON b.id = s.batch_id
+     WHERE s.id = $1`,
     [studentId]
   );
   if (rows.length === 0) throw new AppError(404, 'Student not found', 'NOT_FOUND');
-  return rows[0] as {
-    id: string;
-    program_id: string;
-    batch_id: string;
-    subdivision_id: string | null;
-  };
+  return rows[0];
 }
 
-// ── POST /api/sessions — Start an interview session ──────────────────────────
+// ── POST /api/interview/sessions — Start a live voice interview ──────────────
+// The student is taken from the JWT (never the request body). Returns the
+// session id used by the live WebSocket (/api/interview/ws/:sessionId) and the
+// first question.
+
+liveInterviewRouter.post(
+  '/sessions',
+  requireRole('STUDENT'),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const parsed = startLiveSessionSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(422, 'Only MOCK_INTERVIEW sessions can be started here', 'VALIDATION_ERROR');
+      }
+      const session = await startLiveInterview(req.user!.id, parsed.data.resume);
+      console.log(`[interview] Live session started sessionId=${session.sessionId} attemptId=${session.attemptId}`);
+      sendSuccess(res, session, 201);
+    } catch (err) {
+      sendError(res, err);
+    }
+  }
+);
+
+// ── POST /api/sessions — Record an interview session (staff) ─────────────────
 // Creates a new assessment_attempt linked to the student and returns the session ID.
 
-interviewRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
+interviewRouter.post('/', requireAssessmentStaff, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const parsed = startSessionSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, 'Validation failed', 'VALIDATION_ERROR');
     const { studentId, goal } = parsed.data;
+    await assertStudentAccess(req.user!, studentId);
 
     const student = await getStudentContext(studentId);
-
-    // Use the first active assessment as the template
-    const { rows: assessmentRows } = await db.query(
-      `SELECT id FROM assessment.assessments WHERE is_active = true ORDER BY created_at LIMIT 1`
-    );
-    if (assessmentRows.length === 0) {
-      throw new AppError(503, 'No active assessment configuration found', 'NO_ASSESSMENT');
-    }
-    const assessmentId: string = assessmentRows[0].id;
-
-    // Create attempt
-    const { rows: attemptRows } = await db.query(
-      `INSERT INTO assessment.assessment_attempts
-         (assessment_id, student_id, interview_type, program_id, batch_id,
-          subdivision_id, assessment_version, scoring_version, status, started_at)
-       VALUES ($1,$2,'TECHNICAL',$3,$4,$5,1,'v1.0','IN_PROGRESS',now())
-       RETURNING id`,
-      [assessmentId, studentId, student.program_id, student.batch_id, student.subdivision_id]
-    );
-    const attemptId: string = attemptRows[0].id;
-
-    // Create session record
-    const { rows: sessionRows } = await db.query(
-      `INSERT INTO session.assessment_sessions
-         (attempt_id, current_sequence_no, state, last_activity_at)
-       VALUES ($1, 0, 'STARTED', now())
-       RETURNING id`,
-      [attemptId]
-    );
-    const sessionId: string = sessionRows[0].id;
+    const { sessionId, attemptId } = await createAttemptAndSession(student);
 
     console.log(
       `[interview] Session started sessionId=${sessionId} attemptId=${attemptId} ` +
@@ -98,9 +120,10 @@ interviewRouter.post('/', async (req: AuthRequest, res: Response): Promise<void>
 // The event handler in module3Handlers.ts updates performance data AND triggers
 // the Module 3 agent, which calls Groq to generate a personalized roadmap.
 
-interviewRouter.post('/:id/conclude', async (req: AuthRequest, res: Response): Promise<void> => {
+interviewRouter.post('/:id/conclude', requireAssessmentStaff, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const sessionId = req.params.id;
+    const sessionId = req.params.id as string;
+    if (!UUID_RE.test(sessionId)) throw new AppError(404, 'Session not found', 'NOT_FOUND');
     const parsed = concludeSessionSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, 'Validation failed', 'VALIDATION_ERROR');
     const {
@@ -113,8 +136,9 @@ interviewRouter.post('/:id/conclude', async (req: AuthRequest, res: Response): P
 
     // Load attempt via session
     const { rows: sessionRows } = await db.query(
-      `SELECT ss.attempt_id
+      `SELECT ss.attempt_id, a.student_id
        FROM session.assessment_sessions ss
+       JOIN assessment.assessment_attempts a ON a.id = ss.attempt_id
        WHERE ss.id = $1`,
       [sessionId]
     );
@@ -122,82 +146,31 @@ interviewRouter.post('/:id/conclude', async (req: AuthRequest, res: Response): P
       throw new AppError(404, 'Session not found', 'NOT_FOUND');
     }
     const attemptId: string = sessionRows[0].attempt_id;
-
-    // Load attempt
-    const { rows: attemptRows } = await db.query(
-      `SELECT student_id, program_id, batch_id, subdivision_id, status
-       FROM assessment.assessment_attempts WHERE id = $1`,
-      [attemptId]
-    );
-    if (attemptRows.length === 0) throw new AppError(404, 'Attempt not found', 'NOT_FOUND');
-    const attempt = attemptRows[0];
-
-    if (attempt.status === 'COMPLETED') {
-      sendSuccess(res, { message: 'Already concluded', attemptId });
-      return;
-    }
-
-    // Mark attempt complete
-    await db.query(
-      `UPDATE assessment.assessment_attempts
-       SET status='COMPLETED', completed_at=now() WHERE id=$1`,
-      [attemptId]
-    );
-
-    // Store assessment report with the provided scores
-    await db.query(
-      `INSERT INTO performance.assessment_reports
-         (attempt_id, student_id, assessment_version, scoring_version,
-          technical_score, communication_score, listening_score, overall_score,
-          component_scores, skill_scores)
-       VALUES ($1,$2,1,'v1.0',$3,$4,$5,$6,$7,NULL)
-       ON CONFLICT (attempt_id) DO UPDATE
-         SET technical_score=$3, communication_score=$4,
-             listening_score=$5, overall_score=$6`,
-      [
-        attemptId,
-        attempt.student_id,
-        technicalScore ?? null,
-        communicationScore ?? null,
-        listeningScore ?? null,
-        overallScore,
-        JSON.stringify({
-          TECHNICAL: technicalScore,
-          COMMUNICATION: communicationScore,
-          LISTENING: listeningScore,
-        }),
-      ]
-    );
-
-    // Update session state
-    await db.query(
-      `UPDATE session.assessment_sessions SET state='CONCLUDED', last_activity_at=now() WHERE id=$1`,
-      [sessionId]
-    );
+    await assertStudentAccess(req.user!, sessionRows[0].student_id);
 
     const resolvedGoal =
       goal ?? 'Improve technical skills, communication skills, and interview readiness';
 
+    const concluded = await completeAttempt(
+      sessionId,
+      attemptId,
+      {
+        overallScore,
+        technicalScore: technicalScore ?? null,
+        communicationScore: communicationScore ?? null,
+        listeningScore: listeningScore ?? null,
+      },
+      resolvedGoal,
+    );
+    if (!concluded) {
+      sendSuccess(res, { message: 'Already concluded', attemptId });
+      return;
+    }
+
     console.log(
       `[interview] Session concluded sessionId=${sessionId} attemptId=${attemptId} ` +
-      `studentId=${attempt.student_id} overallScore=${overallScore} goal="${resolvedGoal}"`
+      `overallScore=${overallScore} goal="${resolvedGoal}"`
     );
-
-    // Emit ATTEMPT_COMPLETED — module3Handlers updates performance data
-    // and triggers the Module 3 agent (Groq roadmap generation)
-    const payload: AttemptCompletedPayload = {
-      attemptId,
-      studentId:         attempt.student_id,
-      programId:         attempt.program_id,
-      batchId:           attempt.batch_id,
-      subdivisionId:     attempt.subdivision_id,
-      overallScore,
-      technicalScore:    technicalScore ?? null,
-      communicationScore: communicationScore ?? null,
-      listeningScore:    listeningScore ?? null,
-      goal:              resolvedGoal,
-    };
-    eventBus.emit(Events.ATTEMPT_COMPLETED, payload);
 
     sendSuccess(res, { message: 'Session concluded. Module 3 agent triggered.', attemptId });
   } catch (err) {

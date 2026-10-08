@@ -3,7 +3,7 @@
 -- Following actual schema. org.students does not have program_id (only batch_id);
 -- program_id snapshot is derived at attempt creation time via batches.program_id.
 
-CREATE TABLE assessment.assessment_attempts (
+CREATE TABLE IF NOT EXISTS assessment.assessment_attempts (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     assessment_id           UUID NOT NULL REFERENCES assessment.assessments(id),
     student_id              UUID NOT NULL REFERENCES org.students(id),

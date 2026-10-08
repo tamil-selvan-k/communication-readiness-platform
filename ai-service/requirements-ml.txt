@@ -1,0 +1,9 @@
+# Optional: only app/services/vector_store.py (embeddings) and app/services/audio_analyzer.py
+# use these, and nothing imports either module today. They add ~2 GB to the image, so
+# they are kept out of requirements.txt. Install with:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch && pip install -r requirements-ml.txt
+-r requirements.txt
+torch>=2.4.0
+sentence-transformers>=3.0.0
+librosa>=0.10.0
+pgvector>=0.2.0

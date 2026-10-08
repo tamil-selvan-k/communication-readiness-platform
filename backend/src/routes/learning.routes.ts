@@ -5,6 +5,7 @@ import { db } from '../shared/db/pool';
 import { AppError } from '../shared/errors/AppError';
 import { sendSuccess, sendError } from '../shared/helpers/response';
 import { AuthRequest } from '../middleware/authenticate';
+import { assertStudentAccess } from '../shared/auth/studentScope';
 import { requireRole } from '../middleware/authorize';
 import { env } from '../config/env';
 
@@ -13,48 +14,63 @@ export const learningRouter = Router();
 // ── Scope guard ───────────────────────────────────────────────────────────────
 
 async function assertStudentScope(req: AuthRequest, studentId: string): Promise<void> {
-  const user = req.user!;
-  const staffRoles = ['PROGRAM_ADMIN', 'TRAINER', 'PLACEMENT_COORDINATOR'];
-  if (staffRoles.includes(user.role)) return;
-  if (user.role === 'STUDENT') {
-    const { rows } = await db.query(
-      'SELECT id FROM org.students WHERE id = $1 AND user_id = $2',
-      [studentId, user.id]
-    );
-    if (rows.length === 0) throw new AppError(403, 'Access denied', 'FORBIDDEN');
-    return;
-  }
-  if (user.role === 'FACULTY_MENTOR') {
-    const { rows } = await db.query(
-      `SELECT id FROM org.student_mentor_assignments
-       WHERE student_id = $1 AND mentor_user_id = $2 AND is_active = true`,
-      [studentId, user.id]
-    );
-    if (rows.length === 0) throw new AppError(403, 'Not assigned to this student', 'FORBIDDEN');
-    return;
-  }
-  throw new AppError(403, 'Access denied', 'FORBIDDEN');
+  await assertStudentAccess(req.user!, studentId);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // KNOWLEDGE DOCUMENTS
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Which documents the caller may read: PUBLIC ones, plus those scoped to their
+// institution — and, for students, to their program/subdivision. The Platform
+// Owner sees everything. Returns a SQL condition on alias `d` using params from $start.
+async function knowledgeVisibility(
+  req: AuthRequest,
+  start: number,
+): Promise<{ condition: string; params: unknown[] }> {
+  const user = req.user!;
+  if (user.role === 'PLATFORM_OWNER') return { condition: 'TRUE', params: [] };
+  const { rows } = await db.query<{
+    institution_id: string | null; program_id: string | null; subdivision_id: string | null;
+  }>(
+    `SELECT u.institution_id, b.program_id, s.subdivision_id
+     FROM identity.users u
+     LEFT JOIN org.students s ON s.user_id = u.id
+     LEFT JOIN org.batches b  ON b.id = s.batch_id
+     WHERE u.id = $1`,
+    [user.id]
+  );
+  const scope = rows[0] ?? { institution_id: null, program_id: null, subdivision_id: null };
+  const scoped = user.role === 'STUDENT'
+    // A student-facing document must match every scope it sets
+    ? `(d.institution_id IS NULL OR d.institution_id = $${start})
+       AND (d.program_id IS NULL OR d.program_id = $${start + 1})
+       AND (d.subdivision_id IS NULL OR d.subdivision_id = $${start + 2})`
+    : `(d.institution_id IS NULL OR d.institution_id = $${start})`;
+  return {
+    condition: `(d.visibility_type = 'PUBLIC' OR (${scoped}))`,
+    params: user.role === 'STUDENT'
+      ? [scope.institution_id, scope.program_id, scope.subdivision_id]
+      : [scope.institution_id],
+  };
+}
+
 learningRouter.get('/knowledge', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const visibilityType = req.query.visibility_type as string | undefined;
-    const params: unknown[] = [];
-    let sql = `SELECT id, title, source_type, source_url, visibility_type,
-                      institution_id, program_id, subdivision_id, metadata,
-                      created_at, updated_at
-               FROM knowledge.knowledge_documents`;
-    const conditions: string[] = [];
+    const visibility = await knowledgeVisibility(req, 1);
+    const params: unknown[] = [...visibility.params];
+    let sql = `SELECT d.id, d.title, d.source_type, d.source_url, d.visibility_type,
+                      d.institution_id, d.program_id, d.subdivision_id, d.metadata,
+                      d.created_at, d.updated_at
+               FROM knowledge.knowledge_documents d`;
+    const conditions: string[] = [visibility.condition];
     if (visibilityType) {
       params.push(visibilityType.toUpperCase());
-      conditions.push(`visibility_type = $${params.length}`);
+      conditions.push(`d.visibility_type = $${params.length}`);
     }
     if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
-    sql += ' ORDER BY created_at DESC';
+    sql += ' ORDER BY d.created_at DESC';
     const { rows } = await db.query(sql, params);
     sendSuccess(res, { documents: rows });
   } catch (err) {
@@ -64,11 +80,13 @@ learningRouter.get('/knowledge', async (req: AuthRequest, res: Response): Promis
 
 learningRouter.get('/knowledge/:id', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
+    const visibility = await knowledgeVisibility(req, 2);
     const { rows: docRows } = await db.query(
-      `SELECT id, title, source_type, source_url, visibility_type,
-              institution_id, program_id, subdivision_id, metadata, created_at, updated_at
-       FROM knowledge.knowledge_documents WHERE id = $1`,
-      [req.params.id]
+      `SELECT d.id, d.title, d.source_type, d.source_url, d.visibility_type,
+              d.institution_id, d.program_id, d.subdivision_id, d.metadata, d.created_at, d.updated_at
+       FROM knowledge.knowledge_documents d
+       WHERE d.id::text = $1 AND ${visibility.condition}`,
+      [req.params.id, ...visibility.params]
     );
     if (docRows.length === 0) throw new AppError(404, 'Document not found', 'NOT_FOUND');
 
@@ -226,7 +244,7 @@ learningRouter.post('/agent/run', async (req: AuthRequest, res: Response): Promi
         goal,
         triggered_by_user_id:  req.user!.id,
       },
-      { timeout: 10_000, headers: { 'X-Internal-Key': env.AI_INTERNAL_KEY } }
+      { timeout: 10_000, headers: { 'X-Internal-Key': env.INTERNAL_API_KEY } }
     );
 
     const agentRunId: string = resp.data.run_id;

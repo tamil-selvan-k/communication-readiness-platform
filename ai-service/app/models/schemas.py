@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ── Question Generation ────────────────────────────────────────────────────────
@@ -33,6 +33,8 @@ class GeneratedQuestionResponse(BaseModel):
     question_text: str
     difficulty: str
     category: str | None = None
+    # 3-5 short points a strong answer should cover — the rubric the answer is scored against
+    key_points: list[str] = Field(default_factory=list)
 
 
 # ── Turn Evaluation ────────────────────────────────────────────────────────────
@@ -43,6 +45,8 @@ class TurnEvaluationRequest(BaseModel):
     difficulty: str
     turn_number: int = 1
     domain: str | None = None
+    # Rubric from question generation; when present the answer is checked point by point
+    expected_points: list[str] = Field(default_factory=list)
 
 
 class TurnEvaluationResponse(BaseModel):
@@ -54,6 +58,31 @@ class TurnEvaluationResponse(BaseModel):
     strengths: str
     weaknesses: str
     next_recommended_difficulty: str  # EASY | MEDIUM | ADVANCED
+    # Communication sub-scores (0-10) used by the blueprint formula; pace and
+    # fillers are measured from the audio by the backend, not judged by the LLM.
+    fluency_score: float | None = Field(default=None, ge=0, le=10)
+    clarity_score: float | None = Field(default=None, ge=0, le=10)
+    # The candidate asked about the question instead of answering it
+    is_clarification: bool = False
+    clarification_response: str = ""
+    # Which expected_points the answer covered / missed (verbatim from the request)
+    points_covered: list[str] = Field(default_factory=list)
+    points_missed: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _clamp_scores(cls, data: Any) -> Any:
+        """LLMs occasionally return 10.5 or -1; clamp instead of failing the whole turn."""
+        if isinstance(data, dict):
+            for key in ("technical_score", "communication_score", "fluency_score", "clarity_score"):
+                value = data.get(key)
+                if isinstance(value, (int, float)):
+                    data[key] = min(10.0, max(0.0, float(value)))
+            for key in ("wpm", "filler_words"):
+                value = data.get(key)
+                if isinstance(value, (int, float)):
+                    data[key] = max(0, int(value))
+        return data
 
 
 # ── Listening Evaluation ───────────────────────────────────────────────────────

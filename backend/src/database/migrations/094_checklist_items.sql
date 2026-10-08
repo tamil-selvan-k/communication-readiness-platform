@@ -2,7 +2,7 @@
 -- program_id and subdivision_id FKs deferred to migration 115 (cross-schema).
 -- is_required=TRUE items must all be mentor-verified for placement eligibility.
 
-CREATE TABLE placement.checklist_items (
+CREATE TABLE IF NOT EXISTS placement.checklist_items (
     id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     program_id     UUID NOT NULL,
     subdivision_id UUID,

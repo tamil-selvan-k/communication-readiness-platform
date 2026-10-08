@@ -27,7 +27,10 @@ export const requireActiveTrainerTenure = async (
 
     const { rows } = await db.query(
       `SELECT id FROM org.trainer_subdivision_assignments
-       WHERE trainer_id = $1 AND subdivision_id = $2 AND end_date IS NULL`,
+       WHERE trainer_user_id = $1 AND subdivision_id = $2
+         AND is_active = true
+         AND (starts_at IS NULL OR starts_at <= now())
+         AND (ends_at IS NULL OR ends_at >= now())`,
       [user.id, subdivisionId]
     );
 

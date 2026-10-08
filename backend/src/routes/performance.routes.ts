@@ -3,40 +3,17 @@ import { db } from '../shared/db/pool';
 import { AppError } from '../shared/errors/AppError';
 import { sendSuccess, sendError } from '../shared/helpers/response';
 import { AuthRequest } from '../middleware/authenticate';
+import { assertStudentAccess } from '../shared/auth/studentScope';
 
 export const performanceRouter = Router();
 
 // ── Scope guard ────────────────────────────────────────────────────────────────
 // STUDENT: own studentId only.
 // FACULTY_MENTOR: must have an active assignment to the target student.
-// PROGRAM_ADMIN / TRAINER / PLACEMENT_COORDINATOR: any student.
+// Other staff (STUDENT_READ_ROLES): any student.
 
 async function assertScope(req: AuthRequest, studentId: string): Promise<void> {
-  const user = req.user!;
-  const staffRoles = ['PROGRAM_ADMIN', 'TRAINER', 'PLACEMENT_COORDINATOR'];
-
-  if (staffRoles.includes(user.role)) return;
-
-  if (user.role === 'STUDENT') {
-    const { rows } = await db.query(
-      'SELECT id FROM org.students WHERE id = $1 AND user_id = $2',
-      [studentId, user.id]
-    );
-    if (rows.length === 0) throw new AppError(403, 'Access denied', 'FORBIDDEN');
-    return;
-  }
-
-  if (user.role === 'FACULTY_MENTOR') {
-    const { rows } = await db.query(
-      `SELECT id FROM org.student_mentor_assignments
-       WHERE student_id = $1 AND mentor_user_id = $2 AND is_active = true`,
-      [studentId, user.id]
-    );
-    if (rows.length === 0) throw new AppError(403, 'Not assigned to this student', 'FORBIDDEN');
-    return;
-  }
-
-  throw new AppError(403, 'Access denied', 'FORBIDDEN');
+  await assertStudentAccess(req.user!, studentId);
 }
 
 // ── GET /api/performance/:studentId ───────────────────────────────────────────
@@ -65,8 +42,11 @@ performanceRouter.get('/:studentId/history', async (req: AuthRequest, res: Respo
   try {
     const studentId = req.params.studentId as string;
     await assertScope(req, studentId);
-    const limit  = Math.min(parseInt(req.query.limit  as string || '20', 10), 100);
-    const offset = parseInt(req.query.offset as string || '0',  10);
+    // Non-numeric or negative values fall back to the defaults instead of reaching SQL as NaN
+    const rawLimit  = parseInt(req.query.limit  as string, 10);
+    const rawOffset = parseInt(req.query.offset as string, 10);
+    const limit  = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 20;
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
 
     const { rows } = await db.query(
       `SELECT id, attempt_id, program_id, batch_id, subdivision_id,

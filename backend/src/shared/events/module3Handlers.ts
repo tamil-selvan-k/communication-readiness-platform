@@ -189,7 +189,7 @@ function invalidateStudentCache(studentId: string): void {
       `${env.AI_SERVICE_URL}/internal/cache/invalidate`,
       { student_id: studentId },
       {
-        headers: { 'X-Internal-Key': env.AI_INTERNAL_KEY },
+        headers: { 'X-Internal-Key': env.INTERNAL_API_KEY },
         timeout: 3000,
       }
     )
@@ -251,7 +251,7 @@ function triggerModule3Agent(
         // No triggered_by_user_id — automated trigger from interview completion
       },
       {
-        headers: { 'X-Internal-Key': env.AI_INTERNAL_KEY },
+        headers: { 'X-Internal-Key': env.INTERNAL_API_KEY },
         timeout: 10_000,
       }
     )

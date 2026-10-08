@@ -4,7 +4,7 @@
 -- FK to performance.listening_stories (M3) and performance.skills (M3) are stored as
 -- plain UUID columns without FK constraints until M3 delivers those tables.
 
-CREATE TABLE session.questions (
+CREATE TABLE IF NOT EXISTS session.questions (
     id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     attempt_id            UUID NOT NULL REFERENCES assessment.assessment_attempts(id),
     question_bank_item_id UUID REFERENCES session.question_bank_items(id),

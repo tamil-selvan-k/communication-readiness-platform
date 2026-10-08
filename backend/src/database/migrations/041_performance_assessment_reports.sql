@@ -3,7 +3,7 @@
 -- Actual schema stores these in component_scores/skill_scores JSONB. Following actual schema.
 -- Proctoring state (tab_switch_count, is_proctor_flagged) stored in component_scores JSONB.
 
-CREATE TABLE performance.assessment_reports (
+CREATE TABLE IF NOT EXISTS performance.assessment_reports (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     attempt_id              UUID NOT NULL UNIQUE REFERENCES assessment.assessment_attempts(id),
     student_id              UUID NOT NULL REFERENCES org.students(id),

@@ -77,11 +77,11 @@ verificationsRouter.post(
 
       // Look up assigned mentor
       const { rows: assignments } = await db.query(
-        'SELECT mentor_id FROM org.student_mentor_assignments WHERE student_id = $1 AND is_active = TRUE LIMIT 1',
+        'SELECT mentor_user_id FROM org.student_mentor_assignments WHERE student_id = $1 AND is_active = TRUE LIMIT 1',
         [studentId]
       );
       if (assignments.length === 0) throw new AppError(422, 'No mentor assigned to this student', 'NO_MENTOR_ASSIGNED');
-      const mentorUserId = assignments[0].mentor_id as string;
+      const mentorUserId = assignments[0].mentor_user_id as string;
 
       // Upsert checklist_progress — move to IN_PROGRESS if still PENDING
       const { rows: progressRows } = await db.query(
@@ -181,7 +181,7 @@ verificationsRouter.post(
           `SELECT cp.id, cp.student_id
            FROM placement.checklist_progress cp
            JOIN org.student_mentor_assignments sma
-             ON sma.student_id = cp.student_id AND sma.mentor_id = $2 AND sma.is_active = TRUE
+             ON sma.student_id = cp.student_id AND sma.mentor_user_id = $2 AND sma.is_active = TRUE
            WHERE cp.id = $1`,
           [progressId, userId]
         );

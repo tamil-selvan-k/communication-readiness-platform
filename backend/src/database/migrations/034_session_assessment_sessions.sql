@@ -5,7 +5,7 @@
 -- Proctoring state is stored in state_data: { tab_switch_count, fullscreen_exit_count,
 -- is_proctor_flagged, replay_count, session_type }.
 
-CREATE TABLE session.assessment_sessions (
+CREATE TABLE IF NOT EXISTS session.assessment_sessions (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     attempt_id          UUID NOT NULL UNIQUE REFERENCES assessment.assessment_attempts(id),
     current_sequence_no INTEGER NOT NULL DEFAULT 0,

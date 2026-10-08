@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     debug: bool = False
     llm_provider: str = "groq"
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "openai/gpt-oss-20b"
     # Generic LLM config (takes priority over groq_* vars)
     llm_api_key: str = ""
     llm_base_url: str = ""

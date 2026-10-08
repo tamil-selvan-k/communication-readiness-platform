@@ -3,7 +3,7 @@
 -- Actual schema has attempt_id + input_type + text_answer + transcript + idempotency_key.
 -- Following actual schema. duration_sec stored in text_answer metadata or omitted for MVP.
 
-CREATE TABLE evaluation.responses (
+CREATE TABLE IF NOT EXISTS evaluation.responses (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     attempt_id       UUID NOT NULL REFERENCES assessment.assessment_attempts(id),
     question_id      UUID NOT NULL REFERENCES session.questions(id),

@@ -2,7 +2,7 @@
 -- Cross-schema FK from session.question_bank_item_skills.skill_id is deferred to migration 115.
 -- Schema source of truth uses 'category' (not 'domain' as in M3 checklist).
 
-CREATE TABLE performance.skills (
+CREATE TABLE IF NOT EXISTS performance.skills (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name        VARCHAR(100) NOT NULL,
     category    VARCHAR(50)  NOT NULL

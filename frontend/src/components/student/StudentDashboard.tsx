@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import { ResumeUploadModal } from './ResumeUploadModal';
 import { useBackHandler } from '../../hooks/useBackHandler';
+import { api } from '../../services/api';
 import { isAssignmentElapsed } from '../common/AssessmentMonitoringWidget';
 
 export const StudentDashboard: React.FC = () => {
@@ -152,66 +153,21 @@ export const StudentDashboard: React.FC = () => {
   const [fetchingGhStats, setFetchingGhStats] = useState(false);
   const [fetchStatsMessage, setFetchStatsMessage] = useState<string | null>(null);
 
-  // Live fetch LeetCode solved count using official GraphQL API
+  // LeetCode solved count, looked up by the backend (leetcode.com blocks browser requests)
   const handleFetchLeetCodeStats = async () => {
     if (!lcUsername.trim()) return;
     setFetchingLcStats(true);
     setFetchStatsMessage(null);
-
     try {
-      // Use official LeetCode GraphQL endpoint
-      const query = `
-        query getUserProfile($username: String!) {
-          matchedUser(username: $username) {
-            username
-            submitStats {
-              acSubmissionNum {
-                difficulty
-                count
-                submissions
-              }
-            }
-          }
-        }
-      `;
-
-      const res = await fetch('https://leetcode.com/graphql', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          query,
-          variables: { username: lcUsername.trim() }
-        })
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        const matchedUser = data?.data?.matchedUser;
-
-        if (matchedUser?.submitStats?.acSubmissionNum) {
-          // Sum up all difficulty counts
-          const totalSolved = matchedUser.submitStats.acSubmissionNum.reduce(
-            (sum: number, item: any) => sum + (item.count || 0),
-            0
-          );
-
-          setLcSolvedCount(totalSolved);
-          setFetchStatsMessage(`Found ${totalSolved} solved problems on LeetCode!`);
-          setFetchingLcStats(false);
-          return;
-        }
-      }
+      const { solved } = await api.student.leetcodeStats(lcUsername.trim());
+      setLcSolvedCount(solved);
+      setFetchStatsMessage(`Found ${solved} solved problems on LeetCode!`);
     } catch (error) {
-      console.error('Failed to fetch LeetCode stats:', error);
+      // Never invent a number: keep what the student already has
+      setFetchStatsMessage(`Couldn't verify @${lcUsername.trim()} on LeetCode (${error instanceof Error ? error.message : 'unavailable'}). You can enter the solved count manually.`);
+    } finally {
+      setFetchingLcStats(false);
     }
-
-    // Fallback if API is unreachable or username not found
-    const fallbackCount = lcSolvedCount > 0 ? lcSolvedCount : 48;
-    setLcSolvedCount(fallbackCount);
-    setFetchStatsMessage(`Connected @${lcUsername.trim()} (${fallbackCount} solved - cached).`);
-    setFetchingLcStats(false);
   };
 
   // Live fetch GitHub public repository count
@@ -231,10 +187,8 @@ export const StudentDashboard: React.FC = () => {
         }
       }
     } catch {}
-    // Fallback if GitHub rate-limits unauthenticated API requests
-    const fallbackCount = ghReposCount > 0 ? ghReposCount : 8;
-    setGhReposCount(fallbackCount);
-    setFetchStatsMessage(`Connected @${ghUsername.trim()} (${fallbackCount} repos).`);
+    // GitHub not reachable / rate-limited / no such user: keep the existing count, don't invent one
+    setFetchStatsMessage(`Couldn't verify @${ghUsername.trim()} on GitHub right now. You can enter the repository count manually.`);
     setFetchingGhStats(false);
   };
 
@@ -756,6 +710,90 @@ export const StudentDashboard: React.FC = () => {
                       )}
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Work Experience */}
+            {(student.resume as any).experience && (student.resume as any).experience.length > 0 && (
+              <div className="space-y-3 pt-2">
+                <h3 className="text-xs font-bold text-neutral-900 uppercase tracking-wider">Work Experience</h3>
+                <div className="space-y-3">
+                  {(student.resume as any).experience.map((exp: any, idx: number) => (
+                    <div key={idx} className="p-4 bg-neutral-50 rounded-2xl border border-neutral-200/80 text-xs space-y-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <h4 className="font-bold text-neutral-900 text-sm">{exp.title}</h4>
+                          <p className="text-neutral-600 font-medium">{exp.company}</p>
+                        </div>
+                        {exp.duration && (
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-neutral-200 text-neutral-700 font-mono font-semibold shrink-0">
+                            {exp.duration}
+                          </span>
+                        )}
+                      </div>
+                      {exp.description && (
+                        <p className="text-xs text-neutral-600 leading-relaxed">{exp.description}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Education */}
+            {(student.resume as any).education && (student.resume as any).education.length > 0 && (
+              <div className="space-y-3 pt-2">
+                <h3 className="text-xs font-bold text-neutral-900 uppercase tracking-wider">Education</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {(student.resume as any).education.map((edu: any, idx: number) => (
+                    <div key={idx} className="p-4 bg-neutral-50 rounded-2xl border border-neutral-200/80 text-xs space-y-1">
+                      <h4 className="font-bold text-neutral-900">{edu.degree}</h4>
+                      <p className="text-neutral-600">{edu.institution}</p>
+                      {edu.year && <p className="text-[10px] font-mono text-neutral-400">{edu.year}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Certifications */}
+            {(student.resume as any).certifications && (student.resume as any).certifications.length > 0 && (
+              <div className="space-y-3 pt-2">
+                <h3 className="text-xs font-bold text-neutral-900 uppercase tracking-wider">Certifications</h3>
+                <div className="flex flex-wrap gap-2">
+                  {(student.resume as any).certifications.map((cert: string, idx: number) => (
+                    <span key={idx} className="px-3 py-1.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs font-semibold text-emerald-800">
+                      {cert}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Links */}
+            {(student.resume as any).links && Object.values((student.resume as any).links).some(Boolean) && (
+              <div className="space-y-3 pt-2">
+                <h3 className="text-xs font-bold text-neutral-900 uppercase tracking-wider">Links</h3>
+                <div className="flex flex-wrap gap-2">
+                  {(student.resume as any).links.github && (
+                    <a href={(student.resume as any).links.github} target="_blank" rel="noopener noreferrer"
+                      className="px-3 py-1.5 bg-neutral-100 border border-neutral-200 rounded-xl text-xs font-mono font-semibold text-neutral-700 hover:bg-neutral-200 transition-colors">
+                      GitHub ↗
+                    </a>
+                  )}
+                  {(student.resume as any).links.linkedin && (
+                    <a href={(student.resume as any).links.linkedin} target="_blank" rel="noopener noreferrer"
+                      className="px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-xl text-xs font-mono font-semibold text-blue-700 hover:bg-blue-100 transition-colors">
+                      LinkedIn ↗
+                    </a>
+                  )}
+                  {(student.resume as any).links.portfolio && (
+                    <a href={(student.resume as any).links.portfolio} target="_blank" rel="noopener noreferrer"
+                      className="px-3 py-1.5 bg-purple-50 border border-purple-200 rounded-xl text-xs font-mono font-semibold text-purple-700 hover:bg-purple-100 transition-colors">
+                      Portfolio ↗
+                    </a>
+                  )}
                 </div>
               </div>
             )}

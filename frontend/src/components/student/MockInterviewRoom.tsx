@@ -11,6 +11,12 @@ import {
   OpenAITTSVoice
 } from '../../services/whisperService';
 import { WhisperSettingsModal } from '../common/WhisperSettingsModal';
+import {
+  LiveInterviewSocket,
+  type DeliveryMetrics,
+  type LiveInterviewMessage,
+  type LiveInterviewReport,
+} from '../../services/liveInterviewSocket';
 import { 
   ShieldAlert, 
   Mic, 
@@ -49,8 +55,10 @@ declare global {
 export const MockInterviewRoom: React.FC = () => {
   const { 
     student,
-    interviewState, 
-    submitAnswer,
+    interviewState,
+    applyLiveInterviewTurn,
+    completeAssessmentAwaitingEvaluation,
+    confirmAbandonSession,
     activeAssignment,
     setActiveView,
     isAssignmentDisqualified,
@@ -64,6 +72,7 @@ export const MockInterviewRoom: React.FC = () => {
 
   const [hasSessionStarted, setHasSessionStarted] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [reconnectAttempt, setReconnectAttempt] = useState<{ current: number; max: number } | null>(null);
   const [isSpeakingQuestion, setIsSpeakingQuestion] = useState(false);
   const [audioVolume, setAudioVolume] = useState(0.2);
   const [currentSpeechText, setCurrentSpeechText] = useState("");
@@ -86,14 +95,19 @@ export const MockInterviewRoom: React.FC = () => {
   const [showQuestionText, setShowQuestionText] = useState(false);
   const audioRecorderRef = useRef<AudioRecorder>(new AudioRecorder());
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
+  const liveSocketRef = useRef<LiveInterviewSocket | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const streamedResponseRef = useRef('');
+  // True when the server has no speech-to-text, so the browser transcribes
+  const clientSttRef = useRef(false);
 
   useEffect(() => {
-    if (!hasSessionStarted || isSubmitting) return;
+    if (!hasSessionStarted || isSubmitting || timeUpRef.current) return;
     const timer = setInterval(() => {
       setSessionTimeLeft(prev => {
         if (prev <= 1) {
           clearInterval(timer);
-          handleExecuteSubmit();
+          handleTimeUp();
           return 0;
         }
         return prev - 1;
@@ -109,6 +123,13 @@ export const MockInterviewRoom: React.FC = () => {
   };
 
   const prevTabSwitchesRef = useRef(interviewState.tabSwitches);
+  const reportedTabSwitchesRef = useRef(interviewState.tabSwitches);
+  useEffect(() => {
+    while (reportedTabSwitchesRef.current < interviewState.tabSwitches) {
+      reportedTabSwitchesRef.current += 1;
+      liveSocketRef.current?.sendProctorEvent('TAB_SWITCH');
+    }
+  }, [interviewState.tabSwitches]);
 
   const recognitionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -128,6 +149,18 @@ export const MockInterviewRoom: React.FC = () => {
   const isVoiceDetectedRef = useRef(false);
   const hasSpokenRef = useRef(false);
   const lastVoiceActiveTimeRef = useRef<number>(0);
+  // First voice activity of the current answer; with lastVoiceActiveTimeRef it gives
+  // the time actually spent speaking, which the server turns into WPM.
+  const speechStartTimeRef = useRef<number | null>(null);
+  // When the mic opened for this answer, and long silences while answering
+  // (blueprint §4.4: hesitations and dead air are part of fluency)
+  const listenStartTimeRef = useRef<number>(0);
+  const pauseCountRef = useRef(0);
+  const longestPauseMsRef = useRef(0);
+  // Report the server sends with the final turn (or when time runs out)
+  const finalReportRef = useRef<LiveInterviewReport | null>(null);
+  const timeUpRef = useRef(false);
+  const reconnectingRef = useRef(false);
   const voiceDurationMsRef = useRef<number>(0);
   const isLiveTranscribedRef = useRef<boolean>(false);
   const [isVoiceDetected, setIsVoiceDetected] = useState(false);
@@ -135,8 +168,209 @@ export const MockInterviewRoom: React.FC = () => {
 
   const currentQ = interviewState.questions[interviewState.turnIndex] || interviewState.questions[0];
   const questionNumber = interviewState.turnIndex + 1;
-  const totalQuestions = interviewState.questions.length;
+  const totalQuestions = interviewState.totalTurns ?? interviewState.questions.length;
   const showWarning = interviewState.tabSwitches > 0 && !warningDismissed;
+
+  const playServerAudio = (encodedAudio: string, mimeType = 'audio/mpeg') => {
+    try {
+      const bytes = Uint8Array.from(atob(encodedAudio), char => char.charCodeAt(0));
+      const source = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+      const audio = new Audio(source);
+      activeAudioRef.current?.pause();
+      activeAudioRef.current = audio;
+      audio.onplay = () => {
+        isSpeakingRef.current = true;
+        setIsSpeakingQuestion(true);
+      };
+      audio.onended = () => {
+        URL.revokeObjectURL(source);
+        isSpeakingRef.current = false;
+        setIsSpeakingQuestion(false);
+      };
+      void audio.play();
+    } catch (error) {
+      console.warn('[MockInterview] Invalid TTS audio frame:', error);
+    }
+  };
+
+  // Silence of at least this long between bursts of speech counts as a long pause
+  const LONG_PAUSE_MS = 2500;
+
+  const deliveryMetrics = (): DeliveryMetrics => {
+    const start = speechStartTimeRef.current;
+    const end = lastVoiceActiveTimeRef.current;
+    if (!start || end <= start) return {};
+    return {
+      durationSec: Math.round((end - start) / 100) / 10 + 0.3,
+      pauseCount: pauseCountRef.current,
+      longestPauseSec: Math.round(longestPauseMsRef.current / 100) / 10,
+      responseLatencySec: listenStartTimeRef.current
+        ? Math.max(0, Math.round((start - listenStartTimeRef.current) / 100) / 10)
+        : undefined,
+    };
+  };
+
+  // Socket dropped mid-interview (network blip, laptop sleep, proxy timeout):
+  // retry with exponential backoff, pausing when the device goes offline.
+  // The server keeps the full interview state so nothing is lost on reconnect.
+  const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000]; // ~30 s total
+
+  const waitForOnline = (): Promise<void> =>
+    new Promise(resolve => {
+      if (navigator.onLine) { resolve(); return; }
+      const handler = () => { window.removeEventListener('online', handler); resolve(); };
+      window.addEventListener('online', handler);
+    });
+
+  const reconnectLive = async () => {
+    const socket = liveSocketRef.current;
+    if (!socket || reconnectingRef.current || interviewState.isCompletedAwaitingEvaluation) return;
+    reconnectingRef.current = true;
+    stopRecordingTurn();
+    isSubmittingRef.current = false;
+    setIsSubmitting(false);
+    setMicPermissionError(null);
+
+    for (let i = 0; i < RECONNECT_DELAYS.length; i++) {
+      setReconnectAttempt({ current: i + 1, max: RECONNECT_DELAYS.length });
+      // Hold until the browser reports network is back
+      await waitForOnline();
+      await new Promise(resolve => setTimeout(resolve, RECONNECT_DELAYS[i]));
+      // Don't keep retrying if the interview ended while we were waiting
+      if (interviewState.isCompletedAwaitingEvaluation || timeUpRef.current) break;
+      try {
+        await socket.connect();
+        reconnectingRef.current = false;
+        setReconnectAttempt(null);
+        return;
+      } catch {
+        // next delay
+      }
+    }
+
+    // All retries exhausted — surface the error and let the user try manually
+    reconnectingRef.current = false;
+    setReconnectAttempt(null);
+    setMicPermissionError('Could not reconnect to the interview service. Tap "Reconnect" to try again.');
+  };
+
+  const handleManualReconnect = () => {
+    setMicPermissionError(null);
+    reconnectingRef.current = false;
+    reconnectLive();
+  };
+
+  const handleLiveMessage = (message: LiveInterviewMessage) => {
+    switch (message.type) {
+      case 'ready':
+        // Only seen after a reconnect: ask the server's current question again and listen
+        if (message.questionText) {
+          speakQuestion(`Let's continue. ${message.questionText}`);
+        }
+        break;
+      case 'transcript_interim':
+        setCurrentSpeechText(message.text);
+        latestSpeechRef.current = message.text;
+        break;
+      case 'status':
+        if (message.stage === 'evaluating' || message.stage === 'generating') {
+          // Deepgram has already detected the end of the utterance. Stop the
+          // browser recorder so speech during evaluation cannot leak into it.
+          stopRecordingTurn();
+          isSubmittingRef.current = true;
+          setIsSubmitting(true);
+        }
+        break;
+      case 'text_chunk':
+        streamedResponseRef.current += message.text || message.chunk || '';
+        break;
+      case 'text_end':
+        streamedResponseRef.current = '';
+        break;
+      case 'tts_audio':
+        playServerAudio(message.audio, message.mimeType);
+        break;
+      case 'clarification':
+        // The turn was not consumed: re-ask, then listen again (auto mode).
+        streamedResponseRef.current = '';
+        isSubmittingRef.current = false;
+        setIsSubmitting(false);
+        setCurrentSpeechText('');
+        latestSpeechRef.current = '';
+        hasSpokenRef.current = false;
+        speakQuestion(`${message.message ? `${message.message} ` : ''}${message.question}`);
+        break;
+      case 'turn_result': {
+        const result = message.data;
+        if (result.report) finalReportRef.current = result.report;
+        applyLiveInterviewTurn({
+          transcript: result.transcript,
+          technicalScore: result.technicalScore,
+          communicationScore: result.communicationScore,
+          feedback: result.feedback,
+          strengths: result.strengths,
+          weaknesses: result.weaknesses,
+          nextDifficulty: result.nextDifficulty,
+          nextQuestionText: result.nextQuestionText,
+          paceWpm: result.audioMetrics?.paceWpm ?? undefined,
+          fillerCount: result.audioMetrics?.fillerCount,
+          keyPointsMissed: result.keyPoints?.missed,
+        });
+        if (!result.nextQuestionText) {
+          liveSocketRef.current?.close();
+          liveSocketRef.current = null;
+        }
+        isSubmittingRef.current = false;
+        setIsSubmitting(false);
+        setCurrentSpeechText('');
+        latestSpeechRef.current = '';
+        break;
+      }
+      case 'interview_complete':
+        // Time ran out after at least one answer: the server scored what was answered
+        finalReportRef.current = message.report;
+        liveSocketRef.current?.close();
+        liveSocketRef.current = null;
+        completeAssessmentAwaitingEvaluation('MOCK_INTERVIEW', message.report);
+        break;
+      case 'terminated':
+        liveSocketRef.current?.close();
+        liveSocketRef.current = null;
+        if (message.reason.startsWith('Disqualified')) {
+          terminateDisqualifiedSession(activeAssignment?.id);
+        } else {
+          setMicPermissionError(message.reason);
+          setTimeout(() => confirmAbandonSession(), 4000);
+        }
+        break;
+      case 'proctor_warning':
+        // The on-screen tab-switch banner already reflects the count
+        break;
+      case 'error':
+        isSubmittingRef.current = false;
+        setIsSubmitting(false);
+        if (liveSocketRef.current && !liveSocketRef.current.isOpen && !timeUpRef.current && !message.fatal) {
+          reconnectLive();
+          break;
+        }
+        setMicPermissionError(message.message);
+        break;
+    }
+  };
+  // The socket keeps one subscription for the whole session; route it through a
+  // ref so each message is handled with the latest render's state.
+  const liveHandlerRef = useRef(handleLiveMessage);
+  useEffect(() => {
+    liveHandlerRef.current = handleLiveMessage;
+  });
+
+  // The live gateway finishes the interview on its last turn_result; build the
+  // report and settle the coin exactly as the end of a regular session does.
+  useEffect(() => {
+    if (interviewState.isActive && interviewState.isCompletedAwaitingEvaluation) {
+      completeAssessmentAwaitingEvaluation('MOCK_INTERVIEW', finalReportRef.current);
+    }
+  }, [interviewState.isActive, interviewState.isCompletedAwaitingEvaluation]);
 
   useEffect(() => {
     autoModeRef.current = autoConversationMode;
@@ -148,14 +382,14 @@ export const MockInterviewRoom: React.FC = () => {
         await document.documentElement.requestFullscreen();
         setIsFullscreen(true);
       }
-    } catch (err) {
-      console.warn("Fullscreen request blocked or denied by browser policy:", err);
+    } catch {
+      // Denied outside a user gesture — the next click (Start / Replay) requests it again
     }
   };
 
   // Immediate Fullscreen trigger on mount + listen for fullscreenchange
   useEffect(() => {
-    requestFullscreen();
+    if ((navigator as any).userActivation?.isActive !== false) requestFullscreen();
 
     const handleFullscreenChange = () => {
       setIsFullscreen(Boolean(document.fullscreenElement));
@@ -212,6 +446,8 @@ export const MockInterviewRoom: React.FC = () => {
         window.speechSynthesis.cancel();
       }
       teardownAudioHardware();
+      liveSocketRef.current?.close();
+      liveSocketRef.current = null;
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
       if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current);
@@ -295,6 +531,11 @@ export const MockInterviewRoom: React.FC = () => {
     }
     setSilenceCountdown(null);
 
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
+    mediaRecorderRef.current = null;
+
     if (recognitionRef.current) {
       try {
         recognitionRef.current.onstart = null;
@@ -307,57 +548,46 @@ export const MockInterviewRoom: React.FC = () => {
     }
   };
 
+  // Time is up: score the answer in progress (if any) and let the server finish the
+  // interview. It replies with the final turn_result, interview_complete or terminated.
+  const handleTimeUp = () => {
+    if (timeUpRef.current) return;
+    timeUpRef.current = true;
+    const transcript = clientSttRef.current ? (latestSpeechRef.current || currentSpeechText).trim() : undefined;
+    const delivery = deliveryMetrics();
+    stopRecordingTurn();
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
+    try {
+      liveSocketRef.current?.finish(transcript, delivery);
+    } catch {
+      setMicPermissionError('Time is up, but the interview service could not be reached to score your answers.');
+    }
+  };
+
   const handleExecuteSubmit = async (textToSubmit?: string) => {
     if (isSubmittingRef.current) return;
     isSubmittingRef.current = true;
     setIsSubmitting(true);
 
-    stopRecordingTurn();
-
-    let candidateAnswer = (textToSubmit || latestSpeechRef.current || currentSpeechText).trim();
-
-    // If Whisper is configured, refine transcript from raw audio buffer
-    if (hasWhisperKey && audioRecorderRef.current.isRecording()) {
-      setIsTranscribingWithWhisper(true);
-      try {
-        const audioBlob = await audioRecorderRef.current.stop();
-        if (audioBlob && audioBlob.size > 500) {
-          const res = await transcribeWithWhisper(audioBlob, currentQ.questionText);
-          if (res.success && res.text.trim()) {
-            candidateAnswer = res.text.trim();
-            setCurrentSpeechText(candidateAnswer);
-            latestSpeechRef.current = candidateAnswer;
-          }
-        }
-      } catch (err) {
-        console.warn("[MockInterview] Whisper transcription fallback:", err);
-      } finally {
-        setIsTranscribingWithWhisper(false);
-      }
-    } else {
-      audioRecorderRef.current.stop().catch(() => {});
-    }
-
-    const finalAnswer = candidateAnswer || 
-      (hasSpokenRef.current 
-        ? `The candidate provided a verbal technical answer discussing architecture scalability, microservice communication, and database performance tradeoffs for ${currentQ.questionText.slice(0, 60)}.`
-        : "I have implemented scalable architecture solutions using reactive patterns, distributed caching, and transactional consistency.");
-
     try {
-      await submitAnswer(finalAnswer);
-    } catch (err) {
-      console.error("[MockInterview] Submit error:", err);
-    } finally {
-      isSubmittingRef.current = false;
+      // Closes the current answer; the server evaluates it and replies with
+      // turn_result asynchronously. With browser STT the transcript goes along.
+      const transcript = clientSttRef.current
+        ? (textToSubmit || latestSpeechRef.current || currentSpeechText).trim()
+        : undefined;
+      const delivery = deliveryMetrics();
+      const recorder = mediaRecorderRef.current;
+      const hadActiveRecorder = recorder?.state === 'recording';
+      if (hadActiveRecorder) {
+        recorder.addEventListener('stop', () => liveSocketRef.current?.endTurn(transcript, delivery), { once: true });
+      }
+      stopRecordingTurn();
+      if (!hadActiveRecorder) liveSocketRef.current?.endTurn(transcript, delivery);
+    } catch {
       setIsSubmitting(false);
-      setCurrentSpeechText("");
-      latestSpeechRef.current = "";
-      accumulatedSpeechRef.current = "";
-      currentSessionFinalRef.current = "";
-      hasSpokenRef.current = false;
-      isLiveTranscribedRef.current = false;
-      voiceDurationMsRef.current = 0;
-      lastVoiceActiveTimeRef.current = 0;
+      isSubmittingRef.current = false;
+      if (liveSocketRef.current && !liveSocketRef.current.isOpen) reconnectLive();
     }
   };
 
@@ -418,11 +648,20 @@ export const MockInterviewRoom: React.FC = () => {
 
             if (voiceActive) {
               hasSpokenRef.current = true;
+              if (isRecordingRef.current && speechStartTimeRef.current === null) {
+                speechStartTimeRef.current = now;
+              } else if (isRecordingRef.current && lastVoiceActiveTimeRef.current > 0) {
+                const silenceMs = now - lastVoiceActiveTimeRef.current;
+                if (silenceMs >= LONG_PAUSE_MS) {
+                  pauseCountRef.current += 1;
+                  longestPauseMsRef.current = Math.max(longestPauseMsRef.current, silenceMs);
+                }
+              }
               lastVoiceActiveTimeRef.current = now;
               voiceDurationMsRef.current += 16;
 
-              // Clear silence timer if user speaks again
-              if (avg > 20 && silenceTimerRef.current) {
+              // Clear silence timer if user speaks again (same threshold as voice detection)
+              if (avg > 16 && silenceTimerRef.current) {
                 clearTimeout(silenceTimerRef.current);
                 silenceTimerRef.current = null;
               }
@@ -437,12 +676,12 @@ export const MockInterviewRoom: React.FC = () => {
               ) {
                 const silenceDuration = now - lastVoiceActiveTimeRef.current;
 
-                // When silence reaches 1200ms after speaking, allow 3.5s quiet window before auto-submission
-                if (silenceDuration >= 1200 && !silenceTimerRef.current) {
+                // When silence reaches 1500ms after speaking, allow 5s quiet window before auto-submission
+                if (silenceDuration >= 1500 && !silenceTimerRef.current) {
                   silenceTimerRef.current = setTimeout(() => {
                     silenceTimerRef.current = null;
                     handleExecuteSubmit(latestSpeechRef.current || currentSpeechText);
-                  }, 3500);
+                  }, 5000);
                 }
               }
             }
@@ -542,7 +781,9 @@ export const MockInterviewRoom: React.FC = () => {
       };
 
       recognition.onerror = (event: any) => {
-        console.warn("SpeechRec error:", event.error);
+        if (event.error !== 'no-speech' && event.error !== 'aborted') {
+          console.warn('SpeechRec error:', event.error);
+        }
         if (event.error === 'not-allowed') {
           setMicPermissionError("Microphone permission was denied. Please allow microphone access in your browser address bar.");
         }
@@ -578,8 +819,13 @@ export const MockInterviewRoom: React.FC = () => {
   };
 
   const startRecording = async () => {
-    if (isSubmittingRef.current) return;
+    if (isSubmittingRef.current || timeUpRef.current) return;
     setMicPermissionError(null);
+    speechStartTimeRef.current = null;
+    lastVoiceActiveTimeRef.current = 0;
+    listenStartTimeRef.current = Date.now();
+    pauseCountRef.current = 0;
+    longestPauseMsRef.current = 0;
 
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
@@ -589,14 +835,40 @@ export const MockInterviewRoom: React.FC = () => {
 
     await initMicrophoneStream();
 
-    if (mediaStreamRef.current && hasWhisperKey) {
-      audioRecorderRef.current.start(mediaStreamRef.current);
+    if (!mediaStreamRef.current || !liveSocketRef.current) {
+      setMicPermissionError('Live interview audio is not connected. Please restart the session.');
+      return;
     }
 
+    liveSocketRef.current.startTurn({
+      questionText: currentQ.questionText,
+      difficulty: currentQ.difficulty,
+      turnNumber: questionNumber,
+      studentId: student.id,
+      domain: student.track || student.programName,
+    });
     isRecordingRef.current = true;
     setIsRecording(true);
 
-    startSpeechRecognition();
+    if (clientSttRef.current) {
+      // The server has no speech-to-text configured: transcribe in the browser
+      // and send the transcript with audio_end. No audio is streamed.
+      latestSpeechRef.current = '';
+      accumulatedSpeechRef.current = '';
+      currentSessionFinalRef.current = '';
+      startSpeechRecognition();
+      return;
+    }
+
+    // Server-side STT (Deepgram): stream the original audio; transcripts come
+    // back over the socket, so browser STT stays off.
+    const recorder = new MediaRecorder(mediaStreamRef.current);
+    recorder.ondataavailable = event => {
+      if (event.data.size > 0) liveSocketRef.current?.sendAudio(event.data);
+    };
+    recorder.onerror = () => setMicPermissionError('The browser could not capture microphone audio.');
+    recorder.start(250);
+    mediaRecorderRef.current = recorder;
   };
 
   useEffect(() => {
@@ -655,10 +927,11 @@ export const MockInterviewRoom: React.FC = () => {
 
           utterance.onend = handleEnd;
           utterance.onerror = (e: any) => {
-            console.warn("SpeechSynthesis error:", e);
+            // 'interrupted' / 'canceled' are expected when speech is skipped or replaced
             if (e.error === 'interrupted' || e.error === 'canceled') {
               return;
             }
+            console.warn('SpeechSynthesis error:', e.error);
             handleEnd();
           };
 
@@ -746,12 +1019,33 @@ export const MockInterviewRoom: React.FC = () => {
   }, [currentQ?.id, currentQ?.questionText, hasSessionStarted, isMuted]);
 
   const handleStartSession = async () => {
+    // The session API call (startInterview) navigates here before its response arrives.
+    // If sessionId is still undefined the WebSocket URL would be empty, causing the
+    // "Unable to connect" error. Show a friendly message so the user just retries.
+    if (!interviewState.sessionId) {
+      setMicPermissionError('Session is still setting up — please wait a moment and try again.');
+      return;
+    }
     setIsStartingSession(true);
     try {
       requestFullscreen();
       setDrawerOpen(false);
       await initMicrophoneStream();
+      const socket = new LiveInterviewSocket(interviewState.sessionId, localStorage.getItem('auth_token'));
+      await socket.connect();
+      liveSocketRef.current = socket;
+      clientSttRef.current = socket.sttMode === 'client';
+      const browserCanTranscribe = Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+      if (clientSttRef.current && !browserCanTranscribe) {
+        socket.close();
+        liveSocketRef.current = null;
+        throw new Error('This browser cannot transcribe speech. Please open the interview in Google Chrome or Microsoft Edge.');
+      }
+      socket.onMessage(message => liveHandlerRef.current(message));
       setHasSessionStarted(true);
+    } catch (error) {
+      console.error('[MockInterview] Live connection error:', error);
+      setMicPermissionError(error instanceof Error ? error.message : 'Unable to connect to the live interview service.');
     } finally {
       setIsStartingSession(false);
     }
@@ -1155,10 +1449,33 @@ export const MockInterviewRoom: React.FC = () => {
         </div>
       )}
 
-      {micPermissionError && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 flex items-center justify-between text-amber-900 text-xs">
+      {/* Reconnecting banner */}
+      {reconnectAttempt && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-3.5 flex items-center justify-between text-amber-900 text-xs">
+          <div className="flex items-center space-x-2">
+            <Loader2 className="w-4 h-4 animate-spin text-amber-600 shrink-0" />
+            <span className="font-medium">
+              Connection lost — reconnecting… (attempt {reconnectAttempt.current} of {reconnectAttempt.max})
+            </span>
+          </div>
+          <span className="text-amber-600 font-mono text-[10px]">Interview state is preserved</span>
+        </div>
+      )}
+
+      {micPermissionError && !reconnectAttempt && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3.5 flex items-center justify-between text-red-900 text-xs">
           <span>{micPermissionError}</span>
-          <button onClick={() => setMicPermissionError(null)} className="text-amber-700 font-bold ml-2">Dismiss</button>
+          <div className="flex items-center space-x-2 ml-2 shrink-0">
+            {micPermissionError.includes('Reconnect') && (
+              <button
+                onClick={handleManualReconnect}
+                className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg font-semibold transition-colors cursor-pointer"
+              >
+                Reconnect
+              </button>
+            )}
+            <button onClick={() => setMicPermissionError(null)} className="text-red-400 hover:text-red-600 font-bold">Dismiss</button>
+          </div>
         </div>
       )}
 
@@ -1202,7 +1519,7 @@ export const MockInterviewRoom: React.FC = () => {
             </div>
             <div className="pt-2">
               <button
-                disabled={isStartingSession}
+                disabled={isStartingSession || !interviewState.sessionId}
                 onClick={handleStartSession}
                 className="inline-flex items-center space-x-2.5 bg-neutral-900 hover:bg-black text-white px-8 py-3.5 rounded-xl text-sm font-semibold transition-all shadow-md active:scale-98 cursor-pointer disabled:opacity-75"
               >
@@ -1210,6 +1527,11 @@ export const MockInterviewRoom: React.FC = () => {
                   <>
                     <Loader2 className="w-4 h-4 animate-spin text-white" />
                     <span>Connecting Hardware...</span>
+                  </>
+                ) : !interviewState.sessionId ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-white" />
+                    <span>Setting up session...</span>
                   </>
                 ) : (
                   <>
@@ -1233,6 +1555,23 @@ export const MockInterviewRoom: React.FC = () => {
                 <div className="inline-flex items-center space-x-2 text-xs font-mono text-neutral-700 bg-neutral-100 border border-neutral-200 px-3.5 py-1.5 rounded-full animate-pulse shadow-2xs mt-4">
                   <Sparkles className="w-3.5 h-3.5 text-amber-500 animate-spin" />
                   <span>Refining speech with OpenAI Whisper...</span>
+                </div>
+              )}
+
+              {/* Live transcript — student can see what the interviewer is hearing */}
+              {isRecording && (
+                <div className="w-full max-w-xl mt-5 min-h-[52px] flex flex-col items-center">
+                  {currentSpeechText ? (
+                    <div className="w-full bg-neutral-950/90 border border-neutral-700 rounded-2xl px-4 py-3 text-center">
+                      <p className="text-xs text-neutral-400 font-mono mb-1 uppercase tracking-wider">Interviewer hearing:</p>
+                      <p className="text-sm text-white leading-relaxed">{currentSpeechText}</p>
+                    </div>
+                  ) : (
+                    <div className="inline-flex items-center space-x-2 text-xs text-neutral-500 font-mono">
+                      <span className="w-2 h-2 rounded-full bg-neutral-400 animate-pulse"></span>
+                      <span>Listening — speak clearly into your microphone</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1270,14 +1609,20 @@ export const MockInterviewRoom: React.FC = () => {
                     Student: "{q.studentAnswer}"
                   </p>
                 )}
-                {q.technicalScore && (
-                  <div className="flex items-center space-x-2 text-[10px] text-neutral-500 font-mono pt-1">
-                    <span>Score: {q.technicalScore}/100</span>
+                {q.technicalScore !== undefined && (
+                  <div className="flex flex-wrap items-center gap-x-2 text-[10px] text-neutral-500 font-mono pt-1">
+                    <span>Technical: {q.technicalScore}/100</span>
+                    {q.communicationScore !== undefined && (<><span>•</span><span>Communication: {q.communicationScore}/100</span></>)}
                     <span>•</span>
-                    <span>WPM: {q.wpm}</span>
+                    <span>WPM: {q.wpm ?? '—'}</span>
                     <span>•</span>
-                    <span>Fillers: {q.fillerWords}</span>
+                    <span>Fillers: {q.fillerWords ?? 0}</span>
                   </div>
+                )}
+                {q.keyPointsMissed && q.keyPointsMissed.length > 0 && (
+                  <p className="text-[10px] text-amber-700 leading-relaxed">
+                    Missed: {q.keyPointsMissed.join(' · ')}
+                  </p>
                 )}
               </div>
             ))}

@@ -55,7 +55,7 @@ const itemSchema = z.object({
 checklistRouter.post(
   '/',
   authenticate,
-  requireRole('PLACEMENT_COORDINATOR'),
+  requireRole('PLACEMENT_COORDINATOR', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const parsed = itemSchema.safeParse(req.body);
@@ -81,7 +81,7 @@ checklistRouter.post(
 checklistRouter.post(
   '/import-csv',
   authenticate,
-  requireRole('PLACEMENT_COORDINATOR'),
+  requireRole('PLACEMENT_COORDINATOR', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       // Expects JSON body: { programId, rows: [{ name, description?, category?, isRequired? }] }
@@ -122,7 +122,7 @@ checklistRouter.post(
 checklistRouter.put(
   '/:id',
   authenticate,
-  requireRole('PLACEMENT_COORDINATOR'),
+  requireRole('PLACEMENT_COORDINATOR', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { id } = req.params;
@@ -156,7 +156,7 @@ checklistRouter.put(
 checklistRouter.delete(
   '/:id',
   authenticate,
-  requireRole('PLACEMENT_COORDINATOR'),
+  requireRole('PLACEMENT_COORDINATOR', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { id } = req.params;
@@ -299,7 +299,7 @@ checklistRouter.get(
 
       const { rows: assignments } = await db.query(
         `SELECT id FROM org.student_mentor_assignments
-         WHERE student_id = $1 AND mentor_id = $2 AND is_active = TRUE`,
+         WHERE student_id = $1 AND mentor_user_id = $2 AND is_active = TRUE`,
         [studentId, userId]
       );
       if (assignments.length === 0) throw new AppError(403, 'Not assigned to this student', 'FORBIDDEN');

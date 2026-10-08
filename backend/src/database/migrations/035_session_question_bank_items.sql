@@ -3,7 +3,7 @@
 -- Conflict note: checklist has expected_answer_hint TEXT; actual schema uses evaluation_criteria JSONB.
 -- Following actual schema.
 
-CREATE TABLE session.question_bank_items (
+CREATE TABLE IF NOT EXISTS session.question_bank_items (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     question_text       TEXT NOT NULL CHECK (length(trim(question_text)) > 0),
     difficulty          VARCHAR(10) NOT NULL CHECK (difficulty IN ('EASY', 'MEDIUM', 'ADVANCED')),
@@ -19,3 +19,7 @@ CREATE TABLE session.question_bank_items (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- The table may already exist from an earlier migration with fewer columns;
+-- add the columns this definition introduces.
+ALTER TABLE session.question_bank_items ADD COLUMN IF NOT EXISTS embedding vector(1536);

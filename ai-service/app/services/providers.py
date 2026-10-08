@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 import time
+# Separate reference for quota cooldowns, so patching `time` (to skip retry sleeps) leaves it intact
+from time import monotonic as _clock
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -49,11 +51,52 @@ class OpenAICompatibleProvider(BaseProvider):
     Covers: OpenAI, Groq, Together.ai, Ollama, vLLM, LM Studio, Jan.ai, Perplexity, etc.
     """
 
-    def __init__(self, base_url: str, api_key: str, model: str) -> None:
+    # A model that hit its daily token cap (or is unavailable) is skipped this long
+    _EXHAUSTED_COOLDOWN_SECONDS = 15 * 60
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        fallback_models: list[str] | None = None,
+        fallback_api_keys: list[str] | None = None,
+    ) -> None:
         from openai import OpenAI
         self._client = OpenAI(base_url=base_url, api_key=api_key or "local")
+        # Extra keys (other accounts) add quota: free-tier limits are per account and model
+        self._extra_clients = [
+            OpenAI(base_url=base_url, api_key=key) for key in (fallback_api_keys or []) if key and key != api_key
+        ]
         self._model = model
+        # Tried in order when the primary model's daily quota is used up — on Groq the
+        # free-tier token limits are per model, so another model usually still has quota.
+        self._fallback_models = [m for m in (fallback_models or []) if m and m != model]
+        # (key index, model) → time until which it is skipped
+        self._exhausted_until: dict[tuple[int, str], float] = {}
         self._last_usage: dict = {}
+
+    # The primary client is read at call time (tests and config updates replace
+    # self._client); fallback settings are optional so partially built providers work.
+    def _all_clients(self) -> list[Any]:
+        return [self._client, *getattr(self, "_extra_clients", [])]
+
+    def _exhausted(self) -> dict[tuple[int, str], float]:
+        if not hasattr(self, "_exhausted_until"):
+            self._exhausted_until = {}
+        return self._exhausted_until
+
+    def _candidates(self) -> list[tuple[int, str]]:
+        """Best model first on every key, then the fallback models on every key."""
+        now = _clock()
+        models = [self._model, *getattr(self, "_fallback_models", [])]
+        pairs = [(k, m) for m in models for k in range(len(self._all_clients()))]
+        available = [p for p in pairs if self._exhausted().get(p, 0) <= now]
+        return available or pairs  # all exhausted: try anyway, the caller gets the real error
+
+    def _is_model_unavailable(self, exc: Exception) -> bool:
+        s = str(exc).lower()
+        return "model_not_found" in s or "does not exist" in s or "decommissioned" in s
 
     def _is_rate_limit(self, exc: Exception) -> bool:
         s = str(exc)
@@ -77,8 +120,33 @@ class OpenAICompatibleProvider(BaseProvider):
         temperature: float = 0.7,
         max_tokens: int | None = None,
     ) -> str:
+        last_exc: Exception | None = None
+        for key_index, model in self._candidates():
+            try:
+                return self._chat_complete_with(
+                    self._all_clients()[key_index], model, messages, response_format, temperature, max_tokens)
+            except Exception as exc:
+                quota_gone = self._is_rate_limit(exc) and self._is_tpd_exhausted(exc)
+                if not (quota_gone or self._is_model_unavailable(exc)):
+                    raise
+                self._exhausted()[(key_index, model)] = _clock() + self._EXHAUSTED_COOLDOWN_SECONDS
+                print(f"[providers] key #{key_index + 1} model {model} unavailable "
+                      f"({'daily quota' if quota_gone else 'not found'}); trying the next fallback", flush=True)
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
+
+    def _chat_complete_with(
+        self,
+        client: Any,
+        model: str,
+        messages: list[dict[str, str]],
+        response_format: dict[str, str] | None,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> str:
         kwargs: dict[str, Any] = dict(
-            model=self._model,
+            model=model,
             messages=messages,
             temperature=temperature,
         )
@@ -88,7 +156,7 @@ class OpenAICompatibleProvider(BaseProvider):
             kwargs["max_tokens"] = max_tokens
         for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
             try:
-                resp = self._client.chat.completions.create(**kwargs)
+                resp = client.chat.completions.create(**kwargs)
                 usage = getattr(resp, "usage", None)
                 self._last_usage = {
                     "input":    getattr(usage, "prompt_tokens",     0) or 0,
@@ -97,7 +165,7 @@ class OpenAICompatibleProvider(BaseProvider):
                     "attempts": attempt + 1,
                 }
                 print(
-                    f"[providers] request model={self._model} call=chat_complete"
+                    f"[providers] request model={model} call=chat_complete"
                     f" attempt={attempt + 1}"
                     f" input_tokens={getattr(usage, 'prompt_tokens', None)}"
                     f" output_tokens={getattr(usage, 'completion_tokens', None)}"

@@ -2,7 +2,7 @@
 -- balance CHECK >= 0 enforces the credit floor (no negative balances).
 -- student_id FK to org.students deferred to migration 115 (cross-schema).
 
-CREATE TABLE credit.credit_accounts (
+CREATE TABLE IF NOT EXISTS credit.credit_accounts (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     student_id UUID NOT NULL UNIQUE,
     balance    NUMERIC(10,2) NOT NULL DEFAULT 0

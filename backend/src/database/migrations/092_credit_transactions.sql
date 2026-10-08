@@ -3,7 +3,7 @@
 -- student_id FK to org.students deferred to migration 115 (cross-schema).
 -- idempotency_key prevents duplicate credit operations on retry.
 
-CREATE TABLE credit.credit_transactions (
+CREATE TABLE IF NOT EXISTS credit.credit_transactions (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id       UUID NOT NULL REFERENCES credit.credit_accounts(id) ON DELETE RESTRICT,
     student_id       UUID NOT NULL,

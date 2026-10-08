@@ -3,7 +3,7 @@
 -- student_id and attempt_id FKs to cross-schema tables deferred to migration 115.
 -- skill_id FK is within-schema (performance.skills) — added directly.
 
-CREATE TABLE performance.skill_performances (
+CREATE TABLE IF NOT EXISTS performance.skill_performances (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     student_id        UUID NOT NULL,
     skill_id          UUID NOT NULL REFERENCES performance.skills(id) ON DELETE RESTRICT,

@@ -3,7 +3,7 @@
 -- input_hash, request_metadata, response_metadata, token_usage, error_code, error_message.
 -- Always write a record here for every LLM call, even on failure.
 
-CREATE TABLE evaluation.ai_runs (
+CREATE TABLE IF NOT EXISTS evaluation.ai_runs (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     response_id       UUID REFERENCES evaluation.responses(id),
     capability        VARCHAR(50) NOT NULL DEFAULT 'EVALUATE_RESPONSE',

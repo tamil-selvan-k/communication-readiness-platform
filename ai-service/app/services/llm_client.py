@@ -19,7 +19,7 @@ PROVIDER_PRESETS: dict[str, str] = {
 }
 
 DEFAULT_MODELS: dict[str, str] = {
-    "groq":       "openai/gpt-oss-120b",
+    "groq":       "openai/gpt-oss-20b",
     "openai":     "gpt-4o-mini",
     "together":   "meta-llama/Llama-3-70b-chat-hf",
     "perplexity": "llama-3.1-sonar-small-128k-online",
@@ -53,7 +53,12 @@ def _build_provider() -> BaseProvider:
     if not api_key and provider_name not in _LOCAL_PROVIDERS:
         return MockProvider()
 
-    return OpenAICompatibleProvider(base_url=base_url, api_key=api_key, model=model)
+    # Comma-separated models to use when the primary one's daily quota runs out
+    fallbacks = [m.strip() for m in os.getenv("LLM_FALLBACK_MODELS", "").split(",") if m.strip()]
+    # Comma-separated extra API keys (other accounts) used when every model on the main key is exhausted
+    fallback_keys = [k.strip() for k in os.getenv("LLM_FALLBACK_API_KEYS", "").split(",") if k.strip()]
+    return OpenAICompatibleProvider(base_url=base_url, api_key=api_key, model=model,
+                                    fallback_models=fallbacks, fallback_api_keys=fallback_keys)
 
 
 # ── High-level client ─────────────────────────────────────────────────────────
@@ -71,22 +76,30 @@ class LLMClient:
     def provider_name(self) -> str:
         return type(self._provider).__name__
 
-    def _call_json(self, prompt: str, max_tokens: int | None = None) -> dict[str, Any]:
+    def _call_json(self, prompt: str, max_tokens: int | None = None, temperature: float = 0.7) -> dict[str, Any]:
         raw = self._provider.chat_complete(
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
+            temperature=temperature,
             max_tokens=max_tokens,
         )
-        return json.loads(raw)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            import logging
+            logging.getLogger(__name__).error("LLM returned non-JSON output: %s", raw[:500])
+            raise ValueError(f"LLM returned non-JSON output: {exc}") from exc
 
+    # Questions benefit from variety; scoring must be repeatable — the same answer
+    # should get the same score, so evaluations run at a near-zero temperature.
     def generate_question(self, prompt: str) -> dict[str, Any]:
-        return self._call_json(prompt)
+        return self._call_json(prompt, temperature=0.7)
 
     def evaluate_turn(self, prompt: str) -> dict[str, Any]:
-        return self._call_json(prompt)
+        return self._call_json(prompt, temperature=0.1)
 
     def evaluate_listening(self, prompt: str) -> dict[str, Any]:
-        return self._call_json(prompt)
+        return self._call_json(prompt, temperature=0.1)
 
     def chat_complete_with_tools(
         self,

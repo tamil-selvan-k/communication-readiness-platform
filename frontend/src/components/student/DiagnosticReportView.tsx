@@ -6,7 +6,8 @@ import {
   Mic,
   AlertTriangle,
   ShieldAlert,
-  Ban
+  Ban,
+  ListChecks
 } from 'lucide-react';
 
 export const DiagnosticReportView: React.FC = () => {
@@ -15,6 +16,21 @@ export const DiagnosticReportView: React.FC = () => {
   if (!latestReport) return null;
 
   const isDisqualified = latestReport.isDisqualified || latestReport.tabSwitches >= 4;
+
+  // The badge follows the score — it used to say "Placement Ready" for every report
+  const readiness = latestReport.overallScore >= 80
+    ? { label: 'Placement Ready', className: 'bg-emerald-50 text-emerald-700 border-emerald-200/80' }
+    : latestReport.overallScore >= 60
+      ? { label: 'Almost Ready', className: 'bg-amber-50 text-amber-700 border-amber-200/80' }
+      : { label: 'Needs Practice', className: 'bg-rose-50 text-rose-700 border-rose-200/80' };
+  const paceMeasured = latestReport.averageWpm > 0;
+  const communicationParts = [
+    { label: 'Fluency', value: latestReport.fluencyScore, suffix: '/100', weight: '35%' },
+    { label: 'Pace', value: paceMeasured ? latestReport.averageWpm : undefined, suffix: ' WPM', weight: '25%', note: latestReport.paceLabel ?? undefined },
+    { label: 'Filler words', value: latestReport.totalFillerWords, suffix: '', weight: '20%' },
+    { label: 'Clarity & tone', value: latestReport.clarityScore, suffix: '/100', weight: '20%' },
+  ];
+  const hasBreakdown = latestReport.fluencyScore !== undefined;
 
   return (
     <div className="w-full px-4 sm:px-6 lg:px-8 xl:px-10 py-8 space-y-8 animate-in fade-in duration-200">
@@ -77,8 +93,13 @@ export const DiagnosticReportView: React.FC = () => {
                 Disqualified
               </span>
             ) : (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/80 mt-1">
-                Placement Ready
+              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border mt-1 ${readiness.className}`}>
+                {readiness.label}
+              </span>
+            )}
+            {latestReport.questionsAnswered !== undefined && latestReport.questionsPlanned !== undefined && (
+              <span className="text-[10px] text-neutral-400 font-mono mt-1.5">
+                {latestReport.questionsAnswered} of {latestReport.questionsPlanned} questions answered
               </span>
             )}
           </div>
@@ -101,6 +122,26 @@ export const DiagnosticReportView: React.FC = () => {
             </p>
           </div>
         </div>
+
+        {hasBreakdown && !isDisqualified && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-5 mt-5 border-t border-neutral-100">
+            {communicationParts.map(part => (
+              <div key={part.label} className="p-3 bg-neutral-50 border border-neutral-200/70 rounded-xl">
+                <p className="text-[10px] text-neutral-400 font-mono uppercase">{part.label} · {part.weight}</p>
+                <p className="text-base font-bold text-neutral-900 mt-0.5">
+                  {part.value === undefined ? 'Not measured' : `${part.value}${part.suffix}`}
+                </p>
+                {part.note && <p className="text-[10px] text-neutral-500">{part.note}</p>}
+              </div>
+            ))}
+            {(latestReport.longPauses !== undefined || latestReport.averageResponseLatencySec != null) && (
+              <p className="col-span-2 sm:col-span-4 text-[11px] text-neutral-500">
+                {latestReport.longPauses ?? 0} long pause(s) while answering
+                {latestReport.averageResponseLatencySec != null && ` · ${latestReport.averageResponseLatencySec}s average time to start answering`}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -115,8 +156,10 @@ export const DiagnosticReportView: React.FC = () => {
           </div>
 
           <div className="flex items-baseline space-x-2">
-            <span className="text-3xl font-black text-neutral-900">{latestReport.averageWpm}</span>
-            <span className="text-xs text-neutral-500 font-medium">Words Per Minute</span>
+            <span className="text-3xl font-black text-neutral-900">{paceMeasured ? latestReport.averageWpm : '—'}</span>
+            <span className="text-xs text-neutral-500 font-medium">
+              {paceMeasured ? `Words Per Minute${latestReport.paceLabel ? ` · ${latestReport.paceLabel}` : ''}` : 'Not enough speech to measure pace'}
+            </span>
           </div>
 
           <div className="w-full bg-neutral-100 h-2 rounded-full overflow-hidden">
@@ -137,6 +180,9 @@ export const DiagnosticReportView: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap gap-2">
+            {Object.keys(latestReport.fillerWordBreakdown).length === 0 && (
+              <p className="text-xs text-neutral-500">No filler words detected.</p>
+            )}
             {Object.entries(latestReport.fillerWordBreakdown).map(([word, count]) => (
               <div key={word} className="flex items-center space-x-1.5 px-3 py-1.5 bg-neutral-50 border border-neutral-200 rounded-lg text-xs">
                 <span className="font-medium text-neutral-800">"{word}"</span>
@@ -170,6 +216,60 @@ export const DiagnosticReportView: React.FC = () => {
           ))}
         </div>
       </div>
+
+      {latestReport.actionableNextSteps.length > 0 && (
+        <div className="bg-white border border-neutral-200/90 rounded-2xl p-6 shadow-xs space-y-3">
+          <div className="flex items-center space-x-2">
+            <ListChecks className="w-4 h-4 text-neutral-700" />
+            <h3 className="text-sm font-semibold tracking-tight text-neutral-900">Your Next Steps</h3>
+          </div>
+          <ol className="space-y-2 list-decimal list-inside text-xs text-neutral-700 leading-relaxed">
+            {latestReport.actionableNextSteps.map((step, idx) => (
+              <li key={idx}>{step}</li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {latestReport.turns && latestReport.turns.length > 0 && (
+        <div className="bg-white border border-neutral-200/90 rounded-2xl p-6 shadow-xs space-y-3">
+          <h3 className="text-sm font-semibold tracking-tight text-neutral-900">Question-by-Question Review</h3>
+          <div className="space-y-2.5">
+            {latestReport.turns.map(turn => (
+              <div key={turn.turn} className="p-3.5 bg-neutral-50 border border-neutral-200/70 rounded-xl space-y-1.5">
+                <div className="flex items-start justify-between gap-3">
+                  <p className="text-xs font-semibold text-neutral-900">Q{turn.turn}. {turn.question}</p>
+                  <span className="shrink-0 px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-neutral-200 text-neutral-700">
+                    {turn.difficulty} · {turn.overallScore}/100
+                  </span>
+                </div>
+                <p className="text-[10px] text-neutral-500 font-mono">
+                  Technical {turn.technicalScore} · Communication {turn.communicationScore}
+                  {turn.wpm !== null && ` · ${turn.wpm} WPM`} · {turn.fillerCount} filler(s)
+                  {turn.pauseCount ? ` · ${turn.pauseCount} long pause(s)` : ''}
+                </p>
+                {turn.pointsCovered.length > 0 && (
+                  <p className="text-[11px] text-emerald-700">Covered: {turn.pointsCovered.join(' · ')}</p>
+                )}
+                {turn.pointsMissed.length > 0 && (
+                  <p className="text-[11px] text-amber-700">Missed: {turn.pointsMissed.join(' · ')}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {latestReport.scoringMethod && latestReport.scoringMethod.length > 0 && (
+        <div className="bg-neutral-50 border border-neutral-200/90 rounded-2xl p-5 space-y-2">
+          <h3 className="text-xs font-semibold tracking-tight text-neutral-700 uppercase font-mono">How this score was calculated</h3>
+          <ul className="space-y-1 list-disc list-inside text-[11px] text-neutral-600 leading-relaxed">
+            {latestReport.scoringMethod.map((line, idx) => (
+              <li key={idx}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
     </div>
   );

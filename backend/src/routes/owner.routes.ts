@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response, NextFunction } from 'express';
 import { db } from '../shared/db/pool';
 import { sendSuccess, sendError } from '../shared/helpers/response';
 import { AuthRequest } from '../middleware/authenticate';
@@ -6,11 +6,35 @@ import { requireRole } from '../middleware/authorize';
 import { z } from 'zod';
 import { AppError } from '../shared/errors/AppError';
 import crypto from 'crypto';
+import { env } from '../config/env';
 
 export const ownerRouter = Router();
 
 // All owner routes require PLATFORM_OWNER role
 const requirePlatformOwner = requireRole('PLATFORM_OWNER');
+
+// GET /institutions/:id[/programs|/departments]: the Platform Owner, or a Super
+// Admin / College Admin reading their own institution.
+const requireOwnerOrOwnInstitution = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const user = req.user!;
+    if (user.role === 'PLATFORM_OWNER') { next(); return; }
+    if (user.role === 'SUPER_ADMIN' || user.role === 'COLLEGE_ADMIN') {
+      const { rows } = await db.query<{ institution_id: string | null }>(
+        'SELECT institution_id FROM identity.users WHERE id = $1',
+        [user.id]
+      );
+      if (rows[0]?.institution_id && rows[0].institution_id === req.params.id) { next(); return; }
+    }
+    throw new AppError(403, 'Access denied', 'FORBIDDEN');
+  } catch (err) {
+    sendError(res, err);
+  }
+};
 
 // ── GET /api/owner/institutions ───────────────────────────────────────────────
 // List all institutions
@@ -24,7 +48,6 @@ ownerRouter.get(
           id,
           name,
           code,
-          type,
           campus_city,
           created_at
          FROM org.institutions
@@ -62,7 +85,7 @@ ownerRouter.post(
         return;
       }
 
-      const { name, code, type, campusCity } = parsed.data;
+      const { name, code, campusCity } = parsed.data;
 
       // Check if code already exists
       const existingCheck = await db.query(
@@ -80,10 +103,10 @@ ownerRouter.post(
 
       // Insert institution
       const result = await db.query(
-        `INSERT INTO org.institutions (name, code, type, campus_city)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, name, code, type, campus_city, created_at`,
-        [name, code.toUpperCase(), type || 'COLLEGE', campusCity || null]
+        `INSERT INTO org.institutions (name, code, campus_city)
+         VALUES ($1, $2, $3)
+         RETURNING id, name, code, campus_city, created_at`,
+        [name, code.toUpperCase(), campusCity || null]
       );
 
       const institution = result.rows[0];
@@ -93,7 +116,6 @@ ownerRouter.post(
           id: institution.id,
           name: institution.name,
           code: institution.code,
-          type: institution.type,
           campusCity: institution.campus_city,
           createdAt: institution.created_at
         }
@@ -108,7 +130,7 @@ ownerRouter.post(
 // Get institution details with metrics
 ownerRouter.get(
   '/institutions/:id',
-  requirePlatformOwner,
+  requireOwnerOrOwnInstitution,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { id } = req.params;
@@ -119,7 +141,6 @@ ownerRouter.get(
           id,
           name,
           code,
-          type,
           campus_city,
           created_at
          FROM org.institutions
@@ -360,7 +381,7 @@ ownerRouter.get(
 // Get programs for a specific institution
 ownerRouter.get(
   '/institutions/:id/programs',
-  requirePlatformOwner,
+  requireOwnerOrOwnInstitution,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { id } = req.params;
@@ -389,7 +410,7 @@ ownerRouter.get(
 // Get departments for a specific institution
 ownerRouter.get(
   '/institutions/:id/departments',
-  requirePlatformOwner,
+  requireOwnerOrOwnInstitution,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { id } = req.params;
@@ -424,7 +445,8 @@ ownerRouter.get(
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const institutionIdFilter = (req.query.institution_id as string) ?? null;
-      const limit = parseInt((req.query.limit as string) ?? '100');
+      const rawLimit = parseInt(req.query.limit as string, 10);
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
 
       let query = `
         SELECT
@@ -443,7 +465,7 @@ ownerRouter.get(
         JOIN org.batches b ON s.batch_id = b.id
         JOIN org.programs p ON b.program_id = p.id
         JOIN org.institutions inst ON p.institution_id = inst.id
-        LEFT JOIN org.departments dept ON dept.institution_id = p.institution_id
+        LEFT JOIN org.departments dept ON dept.id = u.department_id
         WHERE 1=1
       `;
 
@@ -563,8 +585,9 @@ ownerRouter.post(
           institution_id,
           permissions,
           status,
-          expires_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + interval '7 days')
+          expires_at,
+          invited_by_user_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + interval '7 days', $10)
         RETURNING *`,
         [
           token,
@@ -575,7 +598,8 @@ ownerRouter.post(
           'SUPER_ADMIN',
           institutionId,
           JSON.stringify(['CAN_VIEW_STUDENT_PROGRESS', 'CAN_ASSIGN_INTERVIEWS', 'CAN_ASSIGN_LISTENING', 'CAN_MANAGE_STUDENTS']),
-          'PENDING'
+          'PENDING',
+          req.user!.id
         ]
       );
 
@@ -583,7 +607,7 @@ ownerRouter.post(
 
       // TODO: Send email via emailService
       // For now, just return the invite URL
-      const inviteUrl = `${req.protocol}://${req.get('host')}/auth/accept-invite?token=${token}`;
+      const inviteUrl = `${env.APP_URL}/?invite_token=${token}`;
 
       sendSuccess(res, {
         invite: {
@@ -728,7 +752,7 @@ ownerRouter.post(
       const updatedInvite = updateResult.rows[0];
 
       // TODO: Send email via emailService
-      const inviteUrl = `${req.protocol}://${req.get('host')}/auth/accept-invite?token=${newToken}`;
+      const inviteUrl = `${env.APP_URL}/?invite_token=${newToken}`;
 
       sendSuccess(res, {
         invite: {

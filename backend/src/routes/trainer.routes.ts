@@ -49,8 +49,8 @@ trainerRouter.post(
 
       const { rows } = await db.query(
         `INSERT INTO org.trainer_subdivision_assignments
-           (trainer_id, subdivision_id, start_date, end_date, assigned_by)
-         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+           (trainer_user_id, subdivision_id, starts_at, ends_at, assigned_by, is_active)
+         VALUES ($1, $2, $3::date, $4::date, $5, true) RETURNING id`,
         [trainerId, subdivisionId, startDate, endDate ?? null, assignedBy]
       );
 
@@ -70,15 +70,16 @@ trainerRouter.get(
     try {
       const trainerId = req.user!.id;
       const { rows } = await db.query(
-        `SELECT tsa.id, tsa.start_date, tsa.end_date,
-                sub.id as subdivision_id, sub.name as subdivision_name, sub.type,
-                b.name as batch_name, b.track, b.year
+        `SELECT tsa.id, tsa.starts_at AS start_date, tsa.ends_at AS end_date,
+                sub.id as subdivision_id, sub.name as subdivision_name, sub.code,
+                p.id as program_id, p.name as program_name
          FROM org.trainer_subdivision_assignments tsa
          JOIN org.subdivisions sub ON sub.id = tsa.subdivision_id
-         JOIN org.batches b ON b.id = sub.batch_id
-         WHERE tsa.trainer_id = $1
-           AND (tsa.end_date IS NULL OR tsa.end_date >= CURRENT_DATE)
-         ORDER BY tsa.start_date DESC`,
+         JOIN org.programs p ON p.id = sub.program_id
+         WHERE tsa.trainer_user_id = $1
+           AND tsa.is_active = true
+           AND (tsa.ends_at IS NULL OR tsa.ends_at >= CURRENT_DATE)
+         ORDER BY tsa.starts_at DESC`,
         [trainerId]
       );
       sendSuccess(res, { subdivisions: rows });

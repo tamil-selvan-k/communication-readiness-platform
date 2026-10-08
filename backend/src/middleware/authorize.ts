@@ -1,6 +1,6 @@
 import { Response, NextFunction } from 'express';
 import { AuthRequest } from './authenticate';
-import { UserRole } from '../shared/types/roles';
+import { UserRole, STAFF_ROLES } from '../shared/types/roles';
 import { AppError } from '../shared/errors/AppError';
 
 export const requireRole = (...roles: UserRole[]) => {
@@ -19,18 +19,16 @@ export const requireRole = (...roles: UserRole[]) => {
   };
 };
 
-// Guard: STUDENT accessing own data, or any staff role
+// Coarse guard: STUDENT or any staff role. The handler must still check the
+// specific student (assertStudentAccess) — students and mentors are scoped.
 export const requireStudentSelfOrStaff = (
   req: AuthRequest,
   res: Response,
   next: NextFunction
 ): void => {
   const user = req.user!;
-  const staffRoles: UserRole[] = ['PLATFORM_OWNER', 'FACULTY_MENTOR', 'PROGRAM_ADMIN', 'TRAINER', 'PLACEMENT_COORDINATOR'];
 
-  if (staffRoles.includes(user.role)) { next(); return; }
-
-  // Student passes through — controller verifies student.user_id === req.user.id
+  if (STAFF_ROLES.includes(user.role)) { next(); return; }
   if (user.role === 'STUDENT') { next(); return; }
 
   const err = new AppError(403, 'Access denied', 'FORBIDDEN');

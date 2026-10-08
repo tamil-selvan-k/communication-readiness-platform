@@ -6,9 +6,14 @@ import { Events, UserRegisteredPayload } from './shared/events/events';
 import { db } from './shared/db/pool';
 import { registerModule3Handlers } from './shared/events/module3Handlers';
 import { recoverDeadRuns } from './agents/agentRunner';
+import { attachInterviewGateway } from './services/interviewGateway';
+import { registerM4EventHandlers } from './modules/credits/event-handlers';
 
 // Module 3 event handlers
 registerModule3Handlers();
+
+// Module 4 — credit accounts, credit refund on completion, eligibility recalculation
+registerM4EventHandlers();
 
 // M1 handler: write audit log on registration (non-blocking)
 // DBML §21: audit_logs uses actor_user_id + after_data (not user_id / metadata)
@@ -33,5 +38,8 @@ const server = app.listen(env.PORT, '0.0.0.0', async () => {
     console.error('[startup] recoverDeadRuns error:', err);
   }
 });
+
+// Live interview audio + results share the HTTP port: ws://<host>/api/interview/ws/:sessionId
+attachInterviewGateway(server);
 
 process.on('SIGTERM', () => server.close(() => process.exit(0)));

@@ -4,15 +4,22 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { env } from '../config/env';
 import { db } from '../shared/db/pool';
-import { authenticate, AuthRequest } from '../middleware/authenticate';
+import { authenticate, AuthRequest, accountBlock } from '../middleware/authenticate';
 import { AppError } from '../shared/errors/AppError';
 import { sendSuccess, sendError } from '../shared/helpers/response';
 import { eventBus } from '../shared/events/eventBus';
 import { Events, UserRegisteredPayload } from '../shared/events/events';
 import { UserRole } from '../shared/types/roles';
 import { AuthUser } from '../shared/types/auth';
+import { lockedForSeconds, recordFailure, clearFailures } from '../shared/security/loginThrottle';
+import crypto from 'crypto';
 
 export const authRouter = Router();
+
+// A real bcrypt hash (cost 10) of a throwaway value, compared when the email does
+// not exist so both paths cost the same. A malformed hash makes compare() return
+// immediately, which would reveal which emails are registered.
+const DUMMY_HASH = bcrypt.hashSync(crypto.randomBytes(16).toString('hex'), 10);
 
 function signToken(user: AuthUser): string {
   return jwt.sign(
@@ -36,6 +43,7 @@ const registerSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters'),
   batchId: z.string().uuid(),
   subdivisionId: z.string().uuid().optional(),
+  rollNumber: z.string().trim().min(1).max(50).optional(),
 });
 
 authRouter.post('/register', async (req: Request, res: Response): Promise<void> => {
@@ -44,12 +52,15 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
     sendError(res, new AppError(422, 'Validation failed', 'VALIDATION_ERROR'));
     return;
   }
-  const { name, email, password, batchId, subdivisionId } = parsed.data;
+  const { name, email, password, batchId, subdivisionId, rollNumber } = parsed.data;
 
   const client = await db.connect();
   try {
-    const { rows: batchRows } = await client.query<{ id: string; program_id: string }>(
-      'SELECT id, program_id FROM org.batches WHERE id = $1', [batchId]
+    const { rows: batchRows } = await client.query<{ id: string; program_id: string; institution_id: string }>(
+      `SELECT b.id, b.program_id, p.institution_id
+       FROM org.batches b JOIN org.programs p ON p.id = b.program_id
+       WHERE b.id = $1 AND b.is_active = true`,
+      [batchId]
     );
     if (batchRows.length === 0) {
       throw new AppError(404, 'Batch not found', 'NOT_FOUND');
@@ -60,18 +71,17 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
     await client.query('BEGIN');
     try {
       const { rows: userRows } = await client.query<{ id: string }>(
-        `INSERT INTO identity.users (name, email, password_hash, role, token_version, status)
-         VALUES ($1, $2, $3, 'STUDENT', 0, 'ACTIVE') RETURNING id`,
-        [name, email, passwordHash]
+        `INSERT INTO identity.users (name, email, password_hash, role, token_version, status, institution_id)
+         VALUES ($1, $2, $3, 'STUDENT', 0, 'ACTIVE', $4) RETURNING id`,
+        [name, email, passwordHash, batchRows[0].institution_id]
       );
       const userId = userRows[0].id;
 
-      // roll_number is required NOT NULL — generate a unique one from timestamp + random suffix
-      const rollNumber = `STU-${Date.now()}-${Math.floor(Math.random() * 9000) + 1000}`;
+      // program_id is required and always the batch's program
       const { rows: studentRows } = await client.query<{ id: string }>(
-        `INSERT INTO org.students (user_id, roll_number, batch_id, subdivision_id)
-         VALUES ($1, $2, $3, $4) RETURNING id`,
-        [userId, rollNumber, batchId, subdivisionId ?? null]
+        `INSERT INTO org.students (user_id, roll_number, program_id, batch_id, subdivision_id)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [userId, rollNumber ?? null, batchRows[0].program_id, batchId, subdivisionId ?? null]
       );
       const studentId = studentRows[0].id;
 
@@ -91,7 +101,10 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
   } catch (err) {
     if (err instanceof AppError) { sendError(res, err); return; }
     if ((err as { code?: string }).code === '23505') {
-      sendError(res, new AppError(409, 'Email already registered', 'DUPLICATE_EMAIL'));
+      const isRollNumber = (err as { constraint?: string }).constraint === 'uq_students_roll_number';
+      sendError(res, isRollNumber
+        ? new AppError(409, 'Roll number already registered', 'DUPLICATE_ROLL_NUMBER')
+        : new AppError(409, 'Email already registered', 'DUPLICATE_EMAIL'));
       return;
     }
     sendError(res, err);
@@ -114,8 +127,14 @@ authRouter.post('/login', async (req: Request, res: Response): Promise<void> => 
     return;
   }
   const { email, password } = parsed.data;
+  const ip = req.ip ?? 'unknown';
 
   try {
+    const lockSeconds = lockedForSeconds(ip, email);
+    if (lockSeconds > 0) {
+      throw new AppError(429, `Too many failed attempts. Try again in ${Math.ceil(lockSeconds / 60)} minute(s).`, 'TOO_MANY_ATTEMPTS');
+    }
+
     const { rows } = await db.query<{
       id: string; name: string; email: string; role: UserRole;
       password_hash: string; token_version: number; status: string;
@@ -127,17 +146,17 @@ authRouter.post('/login', async (req: Request, res: Response): Promise<void> => 
 
     // Always run bcrypt regardless of whether the email exists — prevents timing-based
     // user enumeration (a found email would otherwise be ~100ms slower than a missing one).
-    const DUMMY_HASH = '$2a$10$invalidhashpadding..................................';
     const hashToCheck = rows.length > 0 ? rows[0].password_hash : DUMMY_HASH;
     const passwordMatch = await bcrypt.compare(password, hashToCheck);
     if (rows.length === 0 || !passwordMatch) {
+      recordFailure(ip, email);
       throw new AppError(401, 'Invalid email or password', 'INVALID_CREDENTIALS');
     }
+    clearFailures(ip, email);
 
     const user = rows[0];
-    if (user.status === 'SUSPENDED') {
-      throw new AppError(403, 'Account suspended', 'ACCOUNT_SUSPENDED');
-    }
+    const blocked = accountBlock(user.status, null);
+    if (blocked) throw blocked;
 
     let studentId: string | null = null;
     if (user.role === 'STUDENT') {
@@ -192,6 +211,31 @@ authRouter.get('/me', authenticate, async (req: AuthRequest, res: Response): Pro
       user: { id: req.user!.id, name: req.user!.name, email: req.user!.email, role: req.user!.role },
       studentId,
     });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ── GET /api/auth/invite/:token ────────────────────────────────────────────────
+// Public: shows the invitee who invited them before they set a password. Only
+// pending, unexpired invites resolve; the token itself is the credential.
+
+authRouter.get('/invite/:token', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const token = String(req.params.token ?? '');
+    if (!/^[0-9a-f]{64}$/i.test(token)) {
+      throw new AppError(404, 'Invalid or expired invitation', 'INVALID_INVITE');
+    }
+    const { rows } = await db.query(
+      `SELECT i.email, i.name, i.first_name, i.last_name, i.role, i.institution_id,
+              inst.name AS institution_name, i.permissions, i.status, i.expires_at, i.created_at
+       FROM identity.invites i
+       LEFT JOIN org.institutions inst ON inst.id = i.institution_id
+       WHERE i.token = $1 AND i.status = 'PENDING' AND i.expires_at > now()`,
+      [token]
+    );
+    if (rows.length === 0) throw new AppError(404, 'Invalid or expired invitation', 'INVALID_INVITE');
+    sendSuccess(res, { invite: rows[0] });
   } catch (err) {
     sendError(res, err);
   }
@@ -254,10 +298,13 @@ authRouter.post('/accept-invite', async (req: Request, res: Response): Promise<v
         password_hash,
         role,
         token_version,
-        status
-      ) VALUES ($1, $2, $3, $4, 0, 'ACTIVE')
+        status,
+        institution_id,
+        first_name,
+        last_name
+      ) VALUES ($1, $2, $3, $4, 0, 'ACTIVE', $5, $6, $7)
       RETURNING id, name, email, role, token_version`,
-      [invite.name, invite.email, passwordHash, invite.role]
+      [invite.name, invite.email, passwordHash, invite.role, invite.institution_id, invite.first_name, invite.last_name]
     );
 
     const user = userResult.rows[0];

@@ -5,7 +5,7 @@
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
-CREATE TABLE assessment.assessments (
+CREATE TABLE IF NOT EXISTS assessment.assessments (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name             VARCHAR(255) NOT NULL CHECK (length(trim(name)) > 0),
     assessment_type  VARCHAR(50)  NOT NULL CHECK (assessment_type IN ('MOCK_INTERVIEW', 'LISTENING_COMPREHENSION')),

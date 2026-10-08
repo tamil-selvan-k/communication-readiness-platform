@@ -7,8 +7,17 @@ class WsManager {
     this.connections.set(sessionId, ws);
   }
 
-  unregister(sessionId: string): void {
+  // When `ws` is given, only unregister if it is still the active socket — a
+  // replaced connection closing must not drop its successor.
+  unregister(sessionId: string, ws?: WebSocket): void {
+    if (ws && this.connections.get(sessionId) !== ws) return;
     this.connections.delete(sessionId);
+  }
+
+  // Server-initiated close (e.g. interview terminated); the client sees code + reason.
+  close(sessionId: string, code: number, reason: string): void {
+    const ws = this.connections.get(sessionId);
+    if (ws && ws.readyState === WebSocket.OPEN) ws.close(code, reason);
   }
 
   get(sessionId: string): WebSocket | undefined {

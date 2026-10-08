@@ -3,6 +3,7 @@ import { db } from '../../shared/db/pool';
 import { AppError } from '../../shared/errors/AppError';
 import { sendSuccess, sendError } from '../../shared/helpers/response';
 import { authenticate, AuthRequest } from '../../middleware/authenticate';
+import { assertStudentAccess } from '../../shared/auth/studentScope';
 import { requireRole } from '../../middleware/authorize';
 import { EligibilityService } from './eligibility.service';
 
@@ -12,7 +13,7 @@ export const placementRouter = Router();
 placementRouter.get(
   '/report',
   authenticate,
-  requireRole('PLACEMENT_COORDINATOR', 'PROGRAM_ADMIN'),
+  requireRole('PLACEMENT_COORDINATOR', 'PROGRAM_ADMIN', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const programId   = req.query.programId as string | undefined;
@@ -70,17 +71,9 @@ placementRouter.get(
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const studentId = req.params.studentId as string;
-      const role = req.user!.role;
-      const userId = req.user!.id;
 
-      // Students can only view their own eligibility
-      if (role === 'STUDENT') {
-        const { rows } = await db.query(
-          'SELECT id FROM org.students WHERE id = $1 AND user_id = $2',
-          [studentId, userId]
-        );
-        if (rows.length === 0) throw new AppError(403, 'Access denied', 'FORBIDDEN');
-      }
+      // Students: own record only; mentors: assigned students only
+      await assertStudentAccess(req.user!, studentId as string);
 
       const { rows } = await db.query(
         `SELECT id, student_id, total_score, maximum_score, threshold_score,
@@ -113,10 +106,12 @@ placementRouter.get(
 placementRouter.post(
   '/:studentId/recalculate',
   authenticate,
-  requireRole('PLACEMENT_COORDINATOR', 'PROGRAM_ADMIN', 'FACULTY_MENTOR'),
+  requireRole('PLACEMENT_COORDINATOR', 'PROGRAM_ADMIN', 'FACULTY_MENTOR', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const studentId = req.params.studentId as string;
+      // Mentors may only recalculate for their assigned students
+      await assertStudentAccess(req.user!, studentId);
 
       await EligibilityService.recalculate(studentId);
 

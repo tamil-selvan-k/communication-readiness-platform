@@ -8,8 +8,14 @@ import { errorHandler } from './middleware/errorHandler';
 
 const app = express();
 
+// Behind the HTTPS reverse proxy (Caddy → nginx) req.ip / req.protocol must come
+// from X-Forwarded-* — otherwise every client looks like the proxy.
+if (env.TRUST_PROXY) app.set('trust proxy', env.TRUST_PROXY);
+
 app.use(helmet());
-app.use(cors({ origin: env.CORS_ORIGIN }));
+// CORS_ORIGIN may list several origins, comma-separated (e.g. the site and an Amplify preview)
+const allowedOrigins = env.CORS_ORIGIN.split(',').map((origin) => origin.trim().replace(/\/+$/, '')).filter(Boolean);
+app.use(cors({ origin: allowedOrigins.length > 1 ? allowedOrigins : allowedOrigins[0] }));
 app.use(express.json());
 app.use(morgan('dev'));
 

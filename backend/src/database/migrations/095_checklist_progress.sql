@@ -3,7 +3,7 @@
 -- checklist_item_id FK is within-schema (exists from migration 094).
 -- is_mentor_verified tracks whether the faculty mentor has signed off.
 
-CREATE TABLE placement.checklist_progress (
+CREATE TABLE IF NOT EXISTS placement.checklist_progress (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     student_id          UUID NOT NULL,
     checklist_item_id   UUID NOT NULL REFERENCES placement.checklist_items(id) ON DELETE RESTRICT,
@@ -18,3 +18,8 @@ CREATE TABLE placement.checklist_progress (
 
     CONSTRAINT uq_checklist_progress_student_item UNIQUE (student_id, checklist_item_id)
 );
+
+-- The table may already exist from an earlier migration with fewer columns;
+-- add the columns this definition introduces.
+ALTER TABLE placement.checklist_progress ADD COLUMN IF NOT EXISTS completion_evidence TEXT;
+ALTER TABLE placement.checklist_progress ADD COLUMN IF NOT EXISTS is_mentor_verified BOOLEAN NOT NULL DEFAULT FALSE;

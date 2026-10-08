@@ -4,6 +4,7 @@ import { db } from '../../shared/db/pool';
 import { AppError } from '../../shared/errors/AppError';
 import { sendSuccess, sendError } from '../../shared/helpers/response';
 import { authenticate, AuthRequest } from '../../middleware/authenticate';
+import { assertStudentAccess } from '../../shared/auth/studentScope';
 import { requireRole } from '../../middleware/authorize';
 import { CreditService } from './credits.service';
 import { cache } from '../../services/cacheService';
@@ -17,16 +18,9 @@ creditsRouter.get(
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { studentId } = req.params;
-      const role = req.user!.role;
-      const userId = req.user!.id;
 
-      if (role === 'STUDENT') {
-        const { rows } = await db.query(
-          'SELECT id FROM org.students WHERE id = $1 AND user_id = $2',
-          [studentId, userId]
-        );
-        if (rows.length === 0) throw new AppError(403, 'Access denied', 'FORBIDDEN');
-      }
+      // Students: own record only; mentors: assigned students only
+      await assertStudentAccess(req.user!, studentId as string);
 
       const key = `credits:balance:${studentId}`;
       const cached = await cache.get<object>(key);
@@ -70,16 +64,9 @@ creditsRouter.get(
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { studentId } = req.params;
-      const role = req.user!.role;
-      const userId = req.user!.id;
 
-      if (role === 'STUDENT') {
-        const { rows } = await db.query(
-          'SELECT id FROM org.students WHERE id = $1 AND user_id = $2',
-          [studentId, userId]
-        );
-        if (rows.length === 0) throw new AppError(403, 'Access denied', 'FORBIDDEN');
-      }
+      // Students: own record only; mentors: assigned students only
+      await assertStudentAccess(req.user!, studentId as string);
 
       const page  = Math.max(1, parseInt(req.query.page as string  || '1', 10));
       const limit = Math.min(100, parseInt(req.query.limit as string || '20', 10));
@@ -127,7 +114,7 @@ const adjustSchema = z.object({
 creditsRouter.post(
   '/adjust',
   authenticate,
-  requireRole('PLACEMENT_COORDINATOR'),
+  requireRole('PLACEMENT_COORDINATOR', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const parsed = adjustSchema.safeParse(req.body);

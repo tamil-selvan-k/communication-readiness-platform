@@ -3,7 +3,7 @@
 -- student_id and attempt_id FKs deferred to migration 115 (cross-schema).
 -- program_id, batch_id, subdivision_id are denormalized org snapshot at capture time.
 
-CREATE TABLE performance.performance_snapshots (
+CREATE TABLE IF NOT EXISTS performance.performance_snapshots (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     student_id          UUID NOT NULL,
     attempt_id          UUID NOT NULL UNIQUE,

@@ -357,10 +357,8 @@ export function setOpenAITTSModel(model: 'tts-1' | 'tts-1-hd'): void {
 
 export function getWhisperApiKey(): string {
   try {
-    const envKey = (import.meta as any).env?.VITE_OPENAI_API_KEY;
-    if (envKey && typeof envKey === 'string' && envKey.trim().length > 0) {
-      return envKey.trim();
-    }
+    // Only a key the user entered in their own browser. A VITE_* key would be
+    // compiled into the public JavaScript bundle and exposed to every visitor.
     const saved = localStorage.getItem(STORAGE_KEY_WHISPER);
     return saved ? saved.trim() : '';
   } catch {

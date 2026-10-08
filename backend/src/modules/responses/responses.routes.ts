@@ -292,7 +292,7 @@ responsesRouter.get(
       if (user.role === 'FACULTY_MENTOR') {
         const { rows: assigned } = await db.query(
           `SELECT id FROM org.student_mentor_assignments
-           WHERE student_id = $1 AND mentor_id = $2 AND is_active = true`,
+           WHERE student_id = $1 AND mentor_user_id = $2 AND is_active = true`,
           [row.student_id, user.id]
         );
         if (assigned.length === 0) throw new AppError(403, 'Not assigned to this student', 'FORBIDDEN');

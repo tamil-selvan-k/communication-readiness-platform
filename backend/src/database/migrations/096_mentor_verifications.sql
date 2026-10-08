@@ -2,7 +2,7 @@
 -- student_id and mentor_user_id FKs deferred to migration 115 (cross-schema).
 -- checklist_progress_id FK is within-schema (exists from migration 095).
 
-CREATE TABLE placement.mentor_verifications (
+CREATE TABLE IF NOT EXISTS placement.mentor_verifications (
     id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     student_id            UUID NOT NULL,
     mentor_user_id        UUID NOT NULL,

@@ -1,42 +1,43 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { 
-  UserRole, 
-  StudentProfile, 
-  DiagnosticReport, 
-  TrainerTenure, 
-  InterviewAssignment, 
-  AssignmentSubmission, 
-  QuestionTurn, 
-  Difficulty, 
-  ParsedResume, 
-  AuthUser, 
-  CodingHandles, 
-  DynamicProgram, 
-  AppNotification, 
-  AdminPermission, 
-  ImprovementChecklistItem, 
+import React, { useContext, useState, useEffect, useRef, useCallback } from 'react';
+import { AppContext } from './appContextInstance';
+import {
+  UserRole,
+  StudentProfile,
+  DiagnosticReport,
+  TrainerTenure,
+  InterviewAssignment,
+  AssignmentSubmission,
+  QuestionTurn,
+  Difficulty,
+  ParsedResume,
+  AuthUser,
+  CodingHandles,
+  DynamicProgram,
+  AppNotification,
+  AdminPermission,
+  ImprovementChecklistItem,
   College
 } from '../types';
-import { 
-  DEFAULT_CLEAN_STUDENT, 
-  INITIAL_STUDENT_PROFILE, 
-  INITIAL_CRITERIA_TASKS, 
-  MOCK_INTERVIEW_QUESTIONS, 
-  MOCK_TRAINER_TENURES, 
-  MOCK_ASSIGNMENTS, 
+import {
+  DEFAULT_CLEAN_STUDENT,
+  INITIAL_STUDENT_PROFILE,
+  INITIAL_CRITERIA_TASKS,
+  MOCK_INTERVIEW_QUESTIONS,
+  MOCK_TRAINER_TENURES,
+  MOCK_ASSIGNMENTS,
   MOCK_MENTEES_LIST
 } from '../data/mockData';
 import { api } from '../services/api';
 import { logger } from '../services/logger';
 import { closeTopModal } from '../utils/modalManager';
 
-export type AppView = 
-  | 'DASHBOARD' 
-  | 'INTERVIEW_ROOM' 
-  | 'LISTENING_ROOM' 
-  | 'REPORT_VIEW' 
-  | 'PROFILE' 
-  | 'PROGRAM_DETAIL' 
+export type AppView =
+  | 'DASHBOARD'
+  | 'INTERVIEW_ROOM'
+  | 'LISTENING_ROOM'
+  | 'REPORT_VIEW'
+  | 'PROFILE'
+  | 'PROGRAM_DETAIL'
   | 'PROGRAM_LOGS'
   | 'ASSESSMENT_ACTIVITY'
   | 'ASSESSMENT_SUBMISSIONS'
@@ -95,6 +96,8 @@ interface InterviewSessionState {
   orbState: 'IDLE' | 'LISTENING' | 'THINKING' | 'SPEAKING';
   liveTranscript: string;
   isCompletedAwaitingEvaluation?: boolean;
+  /** Planned number of turns when the server drives the interview (questions grow one at a time). */
+  totalTurns?: number;
 }
 
 export interface ImpersonationSession {
@@ -105,7 +108,7 @@ export interface ImpersonationSession {
   targetStudent?: StudentProfile;
 }
 
-interface AppContextType {
+export interface AppContextType {
   isAuthenticated: boolean;
   currentUser: AuthUser | null;
   authModalOpen: boolean;
@@ -148,6 +151,19 @@ interface AppContextType {
   interviewState: InterviewSessionState;
   startInterview: (type?: 'MOCK_INTERVIEW' | 'LISTENING_COMPREHENSION') => Promise<void>;
   submitAnswer: (answerText: string) => Promise<void>;
+  applyLiveInterviewTurn: (turn: {
+    transcript: string;
+    technicalScore: number;
+    communicationScore: number;
+    feedback: string;
+    strengths: string;
+    weaknesses: string;
+    nextDifficulty: Difficulty;
+    nextQuestionText: string;
+    paceWpm?: number;
+    fillerCount?: number;
+    keyPointsMissed?: string[];
+  }) => void;
   endInterview: () => Promise<void>;
   completeAssessmentAwaitingEvaluation: (type: 'MOCK_INTERVIEW' | 'LISTENING_COMPREHENSION', finalReport?: DiagnosticReport | null) => Promise<void>;
   isEvaluationPending: boolean;
@@ -210,7 +226,6 @@ interface AppContextType {
   toggleTheme: () => void;
 }
 
-const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -662,7 +677,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (resetTimer) clearTimeout(resetTimer);
     };
   }, [triggerBackNavigation]);
+  // One-time restore: every account back to 5 coins in this browser (coins live in
+  // localStorage). Bump the date to restore everyone again.
+  const COINS_RESET_EPOCH = '2026-10-07';
+  const restoreAllCoinsOnce = () => {
+    try {
+      if (localStorage.getItem('crp_coins_reset_epoch') === COINS_RESET_EPOCH) return;
+      Object.keys(localStorage)
+        .filter(key => key.startsWith('crp_student_coins_') || key.startsWith('crp_zero_coins_time_'))
+        .forEach(key => localStorage.removeItem(key));
+      localStorage.setItem('crp_coins_reset_epoch', COINS_RESET_EPOCH);
+    } catch {}
+  };
+
   const getInitialCoins = (id?: string): number => {
+    restoreAllCoinsOnce();
     if (!id) return 5;
     try {
       const saved = localStorage.getItem(`crp_student_coins_${id}`);
@@ -709,38 +738,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [sessionCoinAtStake, setSessionCoinAtStake] = useState<boolean>(false);
 
-  // Regains credit up until 5 (capped at 5) upon successful completion without disqualification
-  const restoreSessionCoin = () => {
+  // ── Session coins: the server's credit ledger is the source of truth (charged at
+  // start, +2 capped at 5 on fair completion, lost on abandon/disqualification).
+  // localStorage only caches the last known balance for the first paint.
+  const listeningCoinRefRef = useRef<string | null>(null);
+
+  const applyCoins = (coins: number) => {
     setStudent(prev => {
-      const current = prev.coins ?? 0;
-      // Regains spent 1 coin and earns 1 bonus credit towards 5 (capped at 5)
-      const nextCoins = Math.min(5, current + 2);
       const sKey = prev.id || 'stu-21cs1084';
       try {
-        localStorage.setItem(`crp_student_coins_${sKey}`, String(nextCoins));
-        if (nextCoins > 0) {
-          localStorage.removeItem(`crp_zero_coins_time_${sKey}`);
-        }
+        localStorage.setItem(`crp_student_coins_${sKey}`, String(coins));
+        if (coins > 0) localStorage.removeItem(`crp_zero_coins_time_${sKey}`);
       } catch {}
-      return { ...prev, coins: nextCoins, zeroCoinsAt: undefined };
+      return {
+        ...prev,
+        coins,
+        zeroCoinsAt: coins === 0 ? (prev.zeroCoinsAt ?? new Date().toISOString()) : undefined,
+      };
     });
-    setSessionCoinAtStake(false);
   };
 
+  const refreshCoins = async () => {
+    try {
+      const { coins } = await api.coins.me();
+      applyCoins(coins);
+    } catch {
+      // keep the last known balance
+    }
+  };
+
+  // Fair completion: the server adds the reward; pick up the new balance
+  const restoreSessionCoin = () => {
+    setSessionCoinAtStake(false);
+    void refreshCoins();
+  };
+
+  const settleCompletedSessionCoins = async (
+    type: 'MOCK_INTERVIEW' | 'LISTENING_COMPREHENSION',
+    report?: DiagnosticReport | null
+  ) => {
+    setSessionCoinAtStake(false);
+    if (type === 'LISTENING_COMPREHENSION' && listeningCoinRefRef.current) {
+      const sessionRef = listeningCoinRefRef.current;
+      listeningCoinRefRef.current = null;
+      try {
+        applyCoins((await api.coins.complete(sessionRef)).coins);
+        return;
+      } catch {
+        // fall through to a plain refresh
+      }
+    }
+    if (typeof report?.coins === 'number') {
+      applyCoins(report.coins);
+      return;
+    }
+    // The completion handler runs just after the final answer — give it a moment
+    setTimeout(() => { void refreshCoins(); }, 1500);
+  };
+
+  // Abandoned: the coin charged at start is simply not given back
   const forfeitSessionCoin = () => {
     setSessionCoinAtStake(false);
-    setStudent(prev => {
-      const sKey = prev.id || 'stu-21cs1084';
-      if ((prev.coins ?? 0) === 0) {
-        try {
-          if (!localStorage.getItem(`crp_zero_coins_time_${sKey}`)) {
-            localStorage.setItem(`crp_zero_coins_time_${sKey}`, String(Date.now()));
-          }
-        } catch {}
-        return { ...prev, zeroCoinsAt: new Date().toISOString() };
-      }
-      return prev;
-    });
+    listeningCoinRefRef.current = null;
+    void refreshCoins();
   };
 
   const requestExitAssessment = () => {
@@ -782,6 +842,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Only Super Admin can restore all 5 credits when institutional student goes to 0
   const restoreStudentCoinsToFive = async (studentId: string) => {
     try {
+      await api.coins.restore(studentId, 5);
+    } catch (err) {
+      console.warn('Restoring coins on the server failed:', err);
+    }
+    try {
       localStorage.setItem(`crp_student_coins_${studentId}`, '5');
       localStorage.removeItem(`crp_zero_coins_time_${studentId}`);
     } catch {}
@@ -817,6 +882,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {}
     restoreStudentCoinsToFive(studentId);
   };
+
+  // Sync coin balance from server whenever the authenticated student changes.
+  // Covers the case where the user is already logged in on page load (token in
+  // localStorage) and the localStorage-cached coin value is stale.
+  useEffect(() => {
+    if (isAuthenticated && student.id && currentUser?.role === 'STUDENT') {
+      void refreshCoins();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, student.id]);
+
+  // Re-sync coins whenever the tab becomes visible or the window regains focus.
+  // This covers manual DB top-ups (e.g. add-coins.js) that happen while the app
+  // is already loaded — no logout/reload needed.
+  useEffect(() => {
+    const sync = () => {
+      if (isAuthenticated && currentUser?.role === 'STUDENT') void refreshCoins();
+    };
+    window.addEventListener('focus', sync);
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      window.removeEventListener('focus', sync);
+      document.removeEventListener('visibilitychange', sync);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, currentUser?.role]);
 
   // 3-Day wait period cooldown check for individually registered students
   useEffect(() => {
@@ -967,8 +1058,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (disqualifiedAssignmentIds.includes(assignmentId)) return true;
     const asg = assignments.find(a => a.id === assignmentId);
     if (asg && asg.submissions) {
-      return asg.submissions.some(s => 
-        (s.studentId === student.id || s.studentRollNumber === student.rollNumber) && 
+      return asg.submissions.some(s =>
+        (s.studentId === student.id || s.studentRollNumber === student.rollNumber) &&
         (s.status === 'DISQUALIFIED' || s.isDisqualified)
       );
     }
@@ -976,8 +1067,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const completeAssignmentSubmission = async (
-    assignmentId: string, 
-    score: number, 
+    assignmentId: string,
+    score: number,
     sessionType: 'MOCK_INTERVIEW' | 'LISTENING_COMPREHENSION' | 'BOTH',
     status: 'COMPLETED' | 'FLAGGED' | 'DISQUALIFIED' = 'COMPLETED',
     reason?: string
@@ -1149,47 +1240,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
-    // Deduct 1 coin immediately upon entering session
-    const remainingCoins = Math.max(0, currentCoins - 1);
-    const sKey = student.id || 'stu-21cs1084';
-    try {
-      localStorage.setItem(`crp_student_coins_${sKey}`, String(remainingCoins));
-      if (remainingCoins === 0 && !localStorage.getItem(`crp_zero_coins_time_${sKey}`)) {
-        localStorage.setItem(`crp_zero_coins_time_${sKey}`, String(Date.now()));
-      }
-    } catch {}
-    setStudent(prev => ({ 
-      ...prev, 
-      coins: remainingCoins,
-      zeroCoinsAt: remainingCoins === 0 ? new Date().toISOString() : undefined
-    }));
-    setSessionCoinAtStake(true);
-
+    // Request fullscreen while the click's user activation is still valid
     try {
       if (typeof document !== 'undefined' && !document.fullscreenElement && document.documentElement.requestFullscreen) {
         document.documentElement.requestFullscreen().catch(() => {});
       }
     } catch {}
 
-    setActiveView(type === 'MOCK_INTERVIEW' ? 'INTERVIEW_ROOM' : 'LISTENING_ROOM');
-
-    try {
-      const data = await api.interview.start(student.id || 'stu-21cs1084', type);
-      setInterviewState({
-        isActive: true,
-        sessionId: data.sessionId,
-        type,
-        turnIndex: 0,
-        currentDifficulty: data.firstQuestion.difficulty,
-        questions: [data.firstQuestion],
-        tabSwitches: 0,
-        isFlagged: false,
-        isDisqualified: false,
-        orbState: 'SPEAKING',
-        liveTranscript: '',
-        isCompletedAwaitingEvaluation: false
-      });
-    } catch {
+    // Listening sessions are scored in the browser; the server still charges the coin
+    if (type === 'LISTENING_COMPREHENSION') {
+      try {
+        const { sessionRef, coins } = await api.coins.spend('LISTENING_COMPREHENSION');
+        listeningCoinRefRef.current = sessionRef;
+        applyCoins(coins);
+      } catch (err) {
+        void refreshCoins();
+        if (typeof document !== 'undefined' && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        alert(`Could not start the session: ${err instanceof Error ? err.message : 'the server is unavailable'}`);
+        return;
+      }
+      setSessionCoinAtStake(true);
+      setActiveView('LISTENING_ROOM');
       setInterviewState({
         isActive: true,
         sessionId: `ses_${Date.now()}`,
@@ -1204,6 +1275,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         liveTranscript: '',
         isCompletedAwaitingEvaluation: false
       });
+      return;
+    }
+
+    // Mock interview: the server charges the coin when it creates the session
+    setSessionCoinAtStake(true);
+    setActiveView('INTERVIEW_ROOM');
+    try {
+      const data = await api.interview.start(student.id, type, student.resume);
+      applyCoins(data.coinsRemaining ?? Math.max(0, currentCoins - 1));
+      setInterviewState({
+        isActive: true,
+        sessionId: data.sessionId,
+        type,
+        turnIndex: 0,
+        currentDifficulty: data.firstQuestion.difficulty,
+        questions: [data.firstQuestion],
+        tabSwitches: 0,
+        isFlagged: false,
+        isDisqualified: false,
+        orbState: 'SPEAKING',
+        liveTranscript: '',
+        isCompletedAwaitingEvaluation: false,
+        totalTurns: data.maxTurns
+      });
+    } catch (err) {
+      // No fallback to a made-up session. The server only charges a coin for a
+      // session it actually created (and refunds it if setup then fails).
+      void refreshCoins();
+      setSessionCoinAtStake(false);
+      setInterviewState(prev => ({ ...prev, isActive: false }));
+      if (typeof document !== 'undefined' && document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+      setActiveView('DASHBOARD');
+      const reason = err instanceof Error ? err.message : 'the interview service is unavailable';
+      alert(`Could not start the interview: ${reason}`);
     }
   };
 
@@ -1220,9 +1327,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const wasDisqualified = interviewState.isDisqualified || interviewState.tabSwitches >= 4;
     if (!wasDisqualified) {
-      restoreSessionCoin();
+      void settleCompletedSessionCoins(type, providedReport);
     } else {
       setSessionCoinAtStake(false);
+      listeningCoinRefRef.current = null;
     }
 
     setInterviewState(prev => ({
@@ -1411,6 +1519,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
+  const applyLiveInterviewTurn = (turn: {
+    transcript: string;
+    technicalScore: number;
+    communicationScore: number;
+    feedback: string;
+    strengths: string;
+    weaknesses: string;
+    nextDifficulty: Difficulty;
+    nextQuestionText: string;
+    paceWpm?: number;
+    fillerCount?: number;
+    keyPointsMissed?: string[];
+  }) => {
+    setInterviewState(previous => {
+      const current = previous.questions[previous.turnIndex];
+      if (!current) return previous;
+      const evaluated: QuestionTurn = {
+        ...current,
+        studentAnswer: turn.transcript,
+        technicalScore: turn.technicalScore,
+        communicationScore: turn.communicationScore,
+        feedback: turn.feedback,
+        strengths: turn.strengths,
+        weaknesses: turn.weaknesses,
+        wpm: turn.paceWpm,
+        fillerWords: turn.fillerCount,
+        keyPointsMissed: turn.keyPointsMissed,
+      };
+      const questions = [...previous.questions];
+      questions[previous.turnIndex] = evaluated;
+
+      // The live gateway is authoritative: an empty next question means it has
+      // completed the session, otherwise it supplies the next adaptive prompt.
+      if (!turn.nextQuestionText) {
+        return { ...previous, questions, orbState: 'IDLE', liveTranscript: '', isCompletedAwaitingEvaluation: true };
+      }
+      const next: QuestionTurn = {
+        id: `live_q_${previous.turnIndex + 2}_${Date.now()}`,
+        questionNumber: previous.turnIndex + 2,
+        questionText: turn.nextQuestionText,
+        difficulty: turn.nextDifficulty,
+      };
+      return {
+        ...previous,
+        questions: [...questions, next],
+        turnIndex: previous.turnIndex + 1,
+        currentDifficulty: turn.nextDifficulty,
+        orbState: 'SPEAKING',
+        liveTranscript: '',
+      };
+    });
+  };
+
   const endInterview = async () => {
     await completeAssessmentAwaitingEvaluation(interviewState.type);
   };
@@ -1524,7 +1685,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const toggleCriteriaTask = async (taskId: string) => {
     setStudent(prev => ({
       ...prev,
-      criteriaTasks: prev.criteriaTasks.map(t => 
+      criteriaTasks: prev.criteriaTasks.map(t =>
         t.id === taskId ? { ...t, isCompleted: !t.isCompleted } : t
       )
     }));
@@ -1539,7 +1700,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     setStudent(prev => ({
       ...prev,
-      criteriaTasks: prev.criteriaTasks.map(t => 
+      criteriaTasks: prev.criteriaTasks.map(t =>
         t.id === taskId ? { ...t, verifiedByMentor: true, verifiedAt: new Date().toISOString().split('T')[0] } : t
       )
     }));
@@ -1679,6 +1840,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           } else {
             setLatestReport(null);
           }
+          // Sync the coin balance from the server right after profile load so
+          // the localStorage-cached value is never shown for more than one paint.
+          void refreshCoins();
         }
       } catch (err) {
         console.warn('Profile fetch after login:', err);
@@ -1705,6 +1869,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (prof) {
         setStudent(prof);
         setLatestReport(null);
+        void refreshCoins();
       }
     } catch (err) {
       console.warn('Profile fetch after candidate register:', err);
@@ -1796,6 +1961,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (prof) {
         setStudent(prof);
         setLatestReport(prof.recentReports?.[0] || null);
+        void refreshCoins();
       }
     } catch (err) {
       console.warn('Profile fetch after verification:', err);
@@ -2027,6 +2193,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       interviewState,
       startInterview,
       submitAnswer,
+      applyLiveInterviewTurn,
       endInterview,
       completeAssessmentAwaitingEvaluation,
       isEvaluationPending,

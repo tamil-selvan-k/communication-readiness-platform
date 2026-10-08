@@ -70,12 +70,14 @@ export class CreditService {
     }
   }
 
-  // Award credits. Caps at max_balance from global policy.
+  // Award credits. Caps at max_balance from global policy, and at `capAt` when given
+  // (e.g. the 5-coin wallet). The transaction records what was actually added.
   static async earn(
     studentId: string,
     amount: number,
     reason: string,
-    referenceId: string
+    referenceId: string,
+    capAt?: number
   ): Promise<EarnResult> {
     const idempotencyKey = ikey(`earn:${studentId}:${reason}:${referenceId}`);
     const client = await db.connect();
@@ -105,7 +107,9 @@ export class CreditService {
       const maxBalance = policies.length > 0 && policies[0].max_balance !== null
         ? Number(policies[0].max_balance) : Infinity;
 
-      const newBalance = Math.min(Number(accounts[0].balance) + amount, maxBalance);
+      const currentBalance = Number(accounts[0].balance);
+      const newBalance = Math.max(currentBalance, Math.min(currentBalance + amount, maxBalance, capAt ?? Infinity));
+      const applied = newBalance - currentBalance;
 
       await client.query(
         'UPDATE credit.credit_accounts SET balance = $1, updated_at = now() WHERE id = $2',
@@ -117,8 +121,8 @@ export class CreditService {
            (account_id, student_id, transaction_type, amount, balance_after, idempotency_key,
             reference_type, reference_id, metadata)
          VALUES ($1,$2,'EARN',$3,$4,$5,$6,$7,$8) RETURNING id`,
-        [accounts[0].id, studentId, amount, newBalance, idempotencyKey,
-         reason, referenceId, JSON.stringify({ reason })]
+        [accounts[0].id, studentId, applied, newBalance, idempotencyKey,
+         reason, referenceId, JSON.stringify({ reason, requested: amount })]
       );
 
       await client.query('COMMIT');

@@ -4,7 +4,7 @@
 -- institution_id, program_id, subdivision_id, student_id are optional scope filters
 -- (no FK constraints so policies can be seeded before those rows exist).
 
-CREATE TABLE credit.credit_policies (
+CREATE TABLE IF NOT EXISTS credit.credit_policies (
     id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     policy_key               VARCHAR(100) UNIQUE,
     scope_type               VARCHAR(20) NOT NULL DEFAULT 'GLOBAL'
@@ -23,3 +23,7 @@ CREATE TABLE credit.credit_policies (
     created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- The table may already exist from an earlier migration with fewer columns;
+-- add the columns this definition introduces.
+ALTER TABLE credit.credit_policies ADD COLUMN IF NOT EXISTS policy_key VARCHAR(100) UNIQUE;

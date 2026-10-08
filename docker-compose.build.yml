@@ -1,0 +1,11 @@
+# Build the images on the server itself instead of pulling them from Docker Hub.
+# Used by deploy/server-deploy.sh together with docker-compose.prod.yml:
+#   docker compose -f docker-compose.prod.yml -f docker-compose.build.yml --env-file .env.production build
+# ai-worker runs the image built for ai-service (same tag), so it has no build of its own.
+services:
+  backend:
+    build: ./backend
+  ai-service:
+    build: ./ai-service
+  frontend:
+    build: ./frontend

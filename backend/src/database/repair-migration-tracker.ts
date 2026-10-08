@@ -19,6 +19,7 @@
 
 import 'dotenv/config';
 import { Client } from 'pg';
+import { pgConnectionConfig } from '../config/pgConnection';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -44,7 +45,7 @@ async function tableExists(
 }
 
 async function main(): Promise<void> {
-  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  const client = new Client(pgConnectionConfig(process.env.DATABASE_URL ?? ''));
   await client.connect();
   console.log('[repair] connected to database');
 

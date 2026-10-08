@@ -50,10 +50,11 @@ export async function openSession(
       model: 'nova-3',
       language: 'en',
       interim_results: ListenV1InterimResults.True,
-      utterance_end_ms: 1000,
-      endpointing: 300,
+      utterance_end_ms: 2500,
+      endpointing: 500,
       smart_format: ListenV1SmartFormat.True,
       vad_events: ListenV1VadEvents.True,
+      filler_words: 'true', // keep "um"/"uh" in transcripts — they are scored (blueprint §4.4)
       Authorization: env.DEEPGRAM_API_KEY, // required by type, filled by SDK auth
     } as any);
   } catch (err) {
@@ -92,7 +93,12 @@ export async function openSession(
       if (session.triggered) return;
       session.triggered = true;
 
-      const finalTranscript = session.transcript.trim() || '(no speech detected)';
+      // Brief pause: final Results messages from Deepgram can arrive a few hundred
+      // milliseconds after UtteranceEnd, so wait before reading session.transcript.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+
+      // May be empty — the caller decides how to handle a silent turn
+      const finalTranscript = session.transcript.trim();
       console.log(`[Deepgram] UtteranceEnd  session=${sessionId}  "${finalTranscript.slice(0, 80)}"`);
 
       try {
@@ -131,11 +137,13 @@ export function sendAudio(sessionId: string, audio: Buffer): void {
   }
 }
 
-export function closeSession(sessionId: string): void {
+// Closes the Deepgram stream and returns the final transcript collected so far.
+export function closeSession(sessionId: string): string {
   const session = sessions.get(sessionId);
-  if (!session) return;
+  if (!session) return '';
   try {
     session.socket.sendCloseStream({});
   } catch {}
   sessions.delete(sessionId);
+  return session.transcript.trim();
 }

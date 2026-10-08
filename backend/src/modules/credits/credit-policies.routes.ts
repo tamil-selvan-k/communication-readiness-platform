@@ -15,7 +15,7 @@ const POLICIES_CACHE_KEY = 'credit:policies:all';
 creditPoliciesRouter.get(
   '/',
   authenticate,
-  requireRole('PROGRAM_ADMIN', 'PLACEMENT_COORDINATOR'),
+  requireRole('PROGRAM_ADMIN', 'PLACEMENT_COORDINATOR', 'SUPER_ADMIN'),
   async (_req: AuthRequest, res: Response): Promise<void> => {
     try {
       const cached = await cache.get<{ policies: unknown[] }>(POLICIES_CACHE_KEY);
@@ -54,7 +54,7 @@ const policySchema = z.object({
 creditPoliciesRouter.post(
   '/',
   authenticate,
-  requireRole('PLACEMENT_COORDINATOR'),
+  requireRole('PLACEMENT_COORDINATOR', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const parsed = policySchema.safeParse(req.body);
@@ -86,7 +86,7 @@ creditPoliciesRouter.post(
 creditPoliciesRouter.put(
   '/:id',
   authenticate,
-  requireRole('PLACEMENT_COORDINATOR'),
+  requireRole('PLACEMENT_COORDINATOR', 'SUPER_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { id } = req.params;

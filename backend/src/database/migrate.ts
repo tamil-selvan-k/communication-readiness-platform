@@ -1,12 +1,20 @@
 import 'dotenv/config';
 import { Client } from 'pg';
+import { pgConnectionConfig } from '../config/pgConnection';
 import fs from 'fs/promises';
 import path from 'path';
 
 const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
 
+// Development fixtures (demo users with a published password) are skipped in production
+// and left unrecorded, so a dev database still gets them. A demo deployment can opt in
+// with SEED_DEMO_DATA=true.
+const DEV_SEED_RE = /_dev_seed/;
+const isProduction = process.env.NODE_ENV === 'production';
+const seedDemoData = process.env.SEED_DEMO_DATA === 'true';
+
 async function main(): Promise<void> {
-  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  const client = new Client(pgConnectionConfig(process.env.DATABASE_URL ?? ''));
   await client.connect();
   console.log('[migrate] connected to database');
 
@@ -34,6 +42,10 @@ async function main(): Promise<void> {
     for (const file of files) {
       if (appliedSet.has(file)) {
         console.log(`[migrate] skip  ${file}`);
+        continue;
+      }
+      if (isProduction && !seedDemoData && DEV_SEED_RE.test(file)) {
+        console.log(`[migrate] skip  ${file} (development seed; set SEED_DEMO_DATA=true to include)`);
         continue;
       }
       const sql = await fs.readFile(path.join(MIGRATIONS_DIR, file), 'utf8');

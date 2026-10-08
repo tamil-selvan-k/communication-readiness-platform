@@ -29,6 +29,7 @@ frontend/.env.*
 communication-readiness-platform/backend/.env
 communication-readiness-platform/backend/.env.*
 !.env.example
+!.env.production.example
 !backend/.env.example
 !communication-readiness-platform/backend/.env.example
 
@@ -42,7 +43,9 @@ communication-readiness-platform/backend/uploads/
 Thumbs.db
 
 # Local reference files (not pushed)
-CLAUDE.md
 AGENTS.md
 DEVELOPMENT.md
 ROADMAP.md
+
+# Local archives
+*.zip
