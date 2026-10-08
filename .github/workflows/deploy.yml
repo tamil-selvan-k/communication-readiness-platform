@@ -128,6 +128,20 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/communication-readiness-ai:${{ github.sha }}
             ${{ secrets.DOCKERHUB_USERNAME }}/communication-readiness-ai:latest
 
+      # -----------------------------
+      # Frontend
+      # -----------------------------
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v7
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/communication-readiness-frontend:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/communication-readiness-frontend:latest
 
   # ============================================================
   # DEPLOY TO EC2
