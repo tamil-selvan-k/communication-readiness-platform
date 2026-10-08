@@ -244,7 +244,7 @@ learningRouter.post('/agent/run', async (req: AuthRequest, res: Response): Promi
         goal,
         triggered_by_user_id:  req.user!.id,
       },
-      { timeout: 10_000, headers: { 'X-Internal-Key': env.AI_INTERNAL_KEY } }
+      { timeout: 10_000, headers: { 'X-Internal-Key': env.INTERNAL_API_KEY } }
     );
 
     const agentRunId: string = resp.data.run_id;

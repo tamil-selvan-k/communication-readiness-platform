@@ -239,7 +239,7 @@ studentRouter.patch(
             student_id: studentId,
             resume_id: resumeId,
           },
-          { headers: { 'X-Internal-Key': env.AI_INTERNAL_KEY }, timeout: 60_000 }
+          { headers: { 'X-Internal-Key': env.INTERNAL_API_KEY }, timeout: 60_000 }
         );
         // Fetch the parsed_data the AI service just wrote to the DB
         const { rows: resumeRows } = await db.query<{ parsed_data: Record<string, unknown> | null }>(

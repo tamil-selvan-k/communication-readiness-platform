@@ -15,7 +15,7 @@ const schema = z.object({
   UPLOAD_MAX_FILE_SIZE_MB: z.coerce.number().default(5),
   UPLOAD_DIR: z.string().default('uploads'),
   // Shared secret for internal calls to the Python AI service
-  AI_INTERNAL_KEY: z.string().default('change-me'),
+  INTERNAL_API_KEY: z.string().default('change-me'),
 
   // Session/Assessment limits
   MAX_QUESTIONS_PER_SESSION: z.coerce.number().default(10),
@@ -44,7 +44,7 @@ if (env.NODE_ENV === 'production') {
   if (env.JWT_SECRET === DEFAULT_JWT_SECRET) {
     throw new Error('JWT_SECRET must be set to a private value in production');
   }
-  if (env.AI_INTERNAL_KEY === 'change-me') {
-    throw new Error('AI_INTERNAL_KEY must be set to a private value in production');
+  if (env.INTERNAL_API_KEY === 'change-me') {
+    throw new Error('INTERNAL_API_KEY must be set to a private value in production');
   }
 }
