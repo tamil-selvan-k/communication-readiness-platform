@@ -13,7 +13,7 @@ import time
 from redis import Redis
 from rq import Worker
 
-_REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+_REDIS_URL = os.environ.get("REDIS_URL", "redis://redis123@redis:6379/0")
 _QUEUES    = ["agent_jobs"]
 _WORKER_ID = os.environ.get("WORKER_ID", f"worker-pid{os.getpid()}")
 
